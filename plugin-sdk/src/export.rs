@@ -151,6 +151,11 @@ pub fn build_translated_table(
                     user_data: std::ptr::null(),
                     padding: Some(padding),
                     apply,
+                    flags: if e.fill_only() {
+                        abi::EFFECT_FILL_ONLY
+                    } else {
+                        0
+                    },
                 };
                 let user_data = Box::into_raw(Box::new(e)) as *const c_void;
                 EffectTable { user_data, ..table }

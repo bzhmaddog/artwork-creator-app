@@ -35,6 +35,10 @@ pub struct SceneLayer {
     pub effects: Vec<EffectInstance>,
     /// Size of `pixmap` relative to the source image, for the effects.
     pub effects_scale: f32,
+    /// A text's or shape's stroke apart from `pixmap`, which then has the rest, and
+    /// whether it goes behind it: for the effects that leave it out (see
+    /// `Layer::parts`).
+    pub stroke: Option<(Arc<Pixmap>, bool)>,
     /// A text or shape layer without effects as filled shapes, for formats that keep
     /// them as vectors. Not for previews.
     pub vector: Option<Arc<Outlines>>,
@@ -315,6 +319,11 @@ fn scene_node(node: &Node, preview: bool, out: &mut Vec<SceneNode>) {
                 } else {
                     Vec::new()
                 };
+                // Its stroke apart for the effects that leave it out.
+                let (pm, stroke) = match l.parts.as_deref().filter(|_| !effects.is_empty()) {
+                    Some(p) => (&p.rest, Some((p.stroke.clone(), p.behind))),
+                    None => (pm, None),
+                };
                 // Area of the pixmap in source pixels: previews may carry margins drawn by
                 // effects, and pixmaps may be smaller than the source image.
                 let [x0, y0, x1, y1] = if preview {
@@ -339,6 +348,7 @@ fn scene_node(node: &Node, preview: bool, out: &mut Vec<SceneNode>) {
                         .flatten(),
                     effects,
                     effects_scale: 1.0 / k[0],
+                    stroke,
                 }));
             }
             Node::Group(g) => {
@@ -957,7 +967,8 @@ fn draw_layer(target: &mut PixmapMut, l: &SceneLayer, to_px: Affine) -> Result<(
     let (pixmap, map) = if l.effects.is_empty() {
         (&l.pixmap, l.map)
     } else {
-        let (pm, pad) = effects::apply_pixmap(&l.pixmap, &l.effects, l.effects_scale)
+        let stroke = l.stroke.as_ref().map(|(pm, behind)| (pm.as_ref(), *behind));
+        let (pm, pad) = effects::apply_pixmap(&l.pixmap, stroke, &l.effects, l.effects_scale)
             .ok_or(tr!("CANNOT_APPLY_EFFECTS"))?;
         processed = Arc::new(pm);
         // The margins the effects added lie left of and above the image.
@@ -2655,6 +2666,46 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn export_leaves_a_shape_stroke_out_of_fill_only_effects() {
+        use crate::document::shape::{self, ShapeKind};
+        use crate::render::effects::{EffectInstance, registry};
+        // A 40 mm square, filled blue, its 4 mm stroke red, inverted.
+        let mut l = shape::new_layer(1, ShapeKind::Rectangle, [30.0, 30.0]);
+        {
+            let s = l.shape.as_mut().unwrap();
+            s.size = [40.0, 40.0];
+            s.fill_color = [0, 0, 255, 255];
+            s.stroke_color = [255, 0, 0, 255];
+            s.stroke_width = 4.0;
+        }
+        l.effects.push(EffectInstance::new(
+            registry().get("builtin.invert").unwrap(),
+        ));
+        let mut doc = crate::document::Document {
+            layers: vec![Node::Layer(Box::new(l))],
+            ..Default::default()
+        };
+        shape::prepare_export(&mut doc, 25.4);
+        let scene = Scene {
+            page_mm: [60.0, 60.0],
+            background: [255, 255, 255],
+            background_gradient: None,
+            background_pattern: None,
+            layers: scene_nodes(&doc.layers, false),
+            elements: Vec::new(),
+            cuts: Cuts::default(),
+            marks: Vec::new(),
+        };
+        let pm = compose(&scene, 25.4, false).unwrap();
+        let rgb = |x, y| {
+            let p = pm.pixel(x, y).unwrap();
+            (p.red(), p.green(), p.blue())
+        };
+        assert_eq!(rgb(30, 30), (255, 255, 0), "the fill inverted");
+        assert_eq!(rgb(10, 30), (255, 0, 0), "the stroke as it was");
+    }
+
+    #[test]
     fn compose_draws_layer_and_outline() {
         let mut img = image::RgbaImage::new(10, 10);
         for p in img.pixels_mut() {
@@ -2675,6 +2726,7 @@ pub(crate) mod tests {
                 blend: BlendMode::Normal,
                 effects: Vec::new(),
                 effects_scale: 1.0,
+                stroke: None,
                 vector: None,
             })],
             elements: vec![SceneElement {

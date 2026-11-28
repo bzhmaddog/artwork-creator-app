@@ -86,7 +86,9 @@ jobs:
         run: |
           cargo install cargo-deb --version 3.8.0 --locked
           cargo deb --no-build --target x86_64-unknown-linux-gnu -o dist/
-          sh scripts/appimage.sh "target/release/${{ matrix.exe }}" "dist/$APP-linux-x86_64.AppImage"
+          # The version in its name, as the .tar.gz and the .deb.
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          sh scripts/appimage.sh "target/release/${{ matrix.exe }}" "dist/$APP-$version-linux-x86_64.AppImage"
       # python.org's embeddable Python, shipped by the Windows packages for the Python plugins.
       - name: Python (Windows)
         if: matrix.name == 'windows'

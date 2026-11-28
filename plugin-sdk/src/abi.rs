@@ -12,13 +12,16 @@
 //! Version 3 added the plugin's texts in other languages: `texts_data` and `texts` at
 //! the end. A version 2 table ends before them (see [`PluginTableV2`]).
 //!
+//! Version 4 added `flags` at the end of each effect table (see [`EFFECT_FILL_ONLY`]).
+//! The effect tables of earlier versions end before it (see [`EffectTableV3`]).
+//!
 //! Strings are UTF-8 and NUL-terminated. Parameter lists and values are JSON (see
 //! [`crate::Param`] and [`crate::Values`]).
 
 use std::ffi::{c_char, c_void};
 
 /// Version of the layout below.
-pub const ABI_VERSION: u32 = 3;
+pub const ABI_VERSION: u32 = 4;
 
 /// Oldest version still loaded: its table is a [`PluginTableV1`].
 pub const OLDEST_ABI_VERSION: u32 = 1;
@@ -140,6 +143,41 @@ pub struct EffectTable {
     /// Null if the effect never draws outside the image.
     pub padding: Option<PaddingFn>,
     pub apply: ApplyFn,
+    /// What the effect is, as bits: [`EFFECT_FILL_ONLY`]. Since version 4.
+    pub flags: u32,
+}
+
+/// An effect's flag: it changes colors, not shapes (a tint, a halftone), so on a shape or
+/// text layer the app leaves the shape's stroke and the text's outline out of it (see
+/// [`crate::Effect::fill_only`]).
+pub const EFFECT_FILL_ONLY: u32 = 1;
+
+/// An effect table before version 4: no `flags`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct EffectTableV3 {
+    pub id: *const c_char,
+    pub name: *const c_char,
+    pub description: *const c_char,
+    pub params_json: *const c_char,
+    pub user_data: *const c_void,
+    pub padding: Option<PaddingFn>,
+    pub apply: ApplyFn,
+}
+
+impl From<EffectTableV3> for EffectTable {
+    fn from(t: EffectTableV3) -> Self {
+        Self {
+            id: t.id,
+            name: t.name,
+            description: t.description,
+            params_json: t.params_json,
+            user_data: t.user_data,
+            padding: t.padding,
+            apply: t.apply,
+            flags: 0,
+        }
+    }
 }
 
 /// ```c
@@ -189,5 +227,7 @@ unsafe impl Send for PluginTable {}
 unsafe impl Sync for PluginTable {}
 unsafe impl Send for EffectTable {}
 unsafe impl Sync for EffectTable {}
+unsafe impl Send for EffectTableV3 {}
+unsafe impl Sync for EffectTableV3 {}
 unsafe impl Send for GeneratorTable {}
 unsafe impl Sync for GeneratorTable {}

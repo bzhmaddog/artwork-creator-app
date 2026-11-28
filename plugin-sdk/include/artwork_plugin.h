@@ -11,7 +11,8 @@
  * the plugin unless it is from 1 to ARTWORK_PLUGIN_ABI_VERSION. Version 2 added
  * generators (generator_count and generators in ArtworkPlugin); a version 1 table ends
  * before them. Version 3 added texts in other languages (texts_data and texts); a
- * version 2 table ends before them.
+ * version 2 table ends before them. Version 4 added flags at the end of ArtworkEffect;
+ * the effects of an earlier table end before it.
  *
  * All strings are UTF-8 and NUL-terminated.
  *
@@ -54,7 +55,12 @@
 extern "C" {
 #endif
 
-#define ARTWORK_PLUGIN_ABI_VERSION 3
+#define ARTWORK_PLUGIN_ABI_VERSION 4
+
+/* An effect's flag: it changes colors, not shapes (a tint, a halftone), so on a shape or
+ * text layer the app leaves the shape's stroke and the text's outline out of it, and
+ * draws them back unchanged before the next effect that isn't one or at the end. */
+#define ARTWORK_EFFECT_FILL_ONLY 1u
 
 #if defined(_WIN32)
 #define ARTWORK_EXPORT __declspec(dllexport)
@@ -91,6 +97,8 @@ typedef struct ArtworkEffect {
     /* NULL if the effect never draws outside the image. */
     ArtworkPaddingFn padding;
     ArtworkApplyFn apply;
+    /* Since version 4: ARTWORK_EFFECT_FILL_ONLY or 0. */
+    uint32_t flags;
 } ArtworkEffect;
 
 /* Draws into the image, `height` rows of `width` straight RGBA pixels, 8 bits per

@@ -41,7 +41,8 @@ by `width * height * 4` bytes of pixels for "apply"; the plugin answers one line
 `{"ok": true, ...}` or `{"ok": false, "error": "..."}`, followed by the pixels when
 "apply" or "generate" succeeded. Requests: `{"op": "describe", "language": "fr-FR"}`,
 answered with the name, version, effects and generators, their texts in that language
-(the English ones without "language", or for a language it has none for); `{"op": "padding", "id", "values"}`, answered with
+(the English ones without "language", or for a language it has none for), each effect
+saying whether it has a "padding" and is "fill_only"; `{"op": "padding", "id", "values"}`, answered with
 `"padding": [left, top, right, bottom]`; `{"op": "apply", "id", "values", "width",
 "height", "scale"}`; `{"op": "generate", "id", "values", "width", "height",
 "px_per_mm"}`.
@@ -53,7 +54,7 @@ import runpy
 import sys
 
 # The SDK's version, the same as the artwork-plugin-sdk crate's.
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 
 def _with(param, role=None, group=None):
@@ -133,12 +134,18 @@ class Image:
 class Effect:
     """An image effect. Set `id` (unique and stable: it is saved in projects; prefix it
     with something of your plugin's), `name`, `description` and `params`, and
-    write `apply`."""
+    write `apply`.
+
+    Set `fill_only` to True for an effect that changes colors, not shapes (a tint, a
+    halftone): on a shape or text layer the app then leaves the shape's stroke and the
+    text's outline out of it, and draws them back unchanged before the next effect that
+    isn't one (a shadow, a blur) or at the end. Apps before SDK 0.7.0 ignore it."""
 
     id = ""
     name = ""
     description = ""
     params = []
+    fill_only = False
 
     def padding(self, values):
         """Room the effect draws into around the image (left, top, right, bottom), in
@@ -249,7 +256,8 @@ class Plugin:
         return {
             "name": self.name,
             "version": self.version,
-            "effects": [dict(entry(e), padding=type(e).padding is not Effect.padding)
+            "effects": [dict(entry(e), padding=type(e).padding is not Effect.padding,
+                             fill_only=bool(e.fill_only))
                         for e in self.effects],
             "generators": [entry(g) for g in self.generators],
         }

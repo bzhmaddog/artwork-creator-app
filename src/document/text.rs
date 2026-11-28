@@ -24,7 +24,7 @@ use skrifa::{FontRef, GlyphId, MetadataProvider as _, Tag};
 use tiny_skia::{FillRule, LineCap, LineJoin, Path, PathBuilder, Pixmap, Stroke, Transform};
 
 use crate::document::gradient::Ink;
-use crate::document::{Document, Layer, P2};
+use crate::document::{Document, DrawnParts, Layer, P2};
 use crate::render::{self, Outlines};
 
 /// Text units per em: a text layer's `size_px` and its effects are measured in these.
@@ -1497,14 +1497,20 @@ fn round_stroke(width: f32) -> Stroke {
     }
 }
 
-/// Draws laid out text at `px_per_unit`.
-pub fn paint(laid: &Laid, text: &Text, px_per_unit: f32) -> Option<Pixmap> {
+/// Draws laid out text at `px_per_unit`, and with `apart` the same in two parts, the
+/// outline apart (see `Layer::parts`), when it has one.
+fn paint_parts(
+    laid: &Laid,
+    text: &Text,
+    px_per_unit: f32,
+    apart: bool,
+) -> Option<(Pixmap, Option<DrawnParts>)> {
     let w = (laid.size[0] as f32 * px_per_unit).round().max(1.0);
     let h = (laid.size[1] as f32 * px_per_unit).round().max(1.0);
     let mut pixmap = Pixmap::new(w as u32, h as u32)?;
     // Exactly the layer's frame, even where the pixel size was rounded.
     let ts = Transform::from_scale(w / laid.size[0] as f32, h / laid.size[1] as f32);
-    for coat in coats(laid, text) {
+    let draw = |pixmap: &mut Pixmap, coat: &Coat| {
         let paint = coat.ink.paint();
         match coat.stroke {
             Some(width) => {
@@ -1512,8 +1518,37 @@ pub fn paint(laid: &Laid, text: &Text, px_per_unit: f32) -> Option<Pixmap> {
             }
             None => pixmap.fill_path(coat.path, &paint, FillRule::Winding, ts, None),
         }
+    };
+    let mut coats = coats(laid, text);
+    let outlined = text.outline && text.outline_width > 0.0 && !coats.is_empty();
+    if !(apart && outlined) {
+        for coat in &coats {
+            draw(&mut pixmap, coat);
+        }
+        return Some((pixmap, None));
     }
-    Some(pixmap)
+    // The outline is the first coat, behind the letters.
+    let outline = coats.remove(0);
+    let mut stroke = Pixmap::new(w as u32, h as u32)?;
+    draw(&mut stroke, &outline);
+    for coat in &coats {
+        draw(&mut pixmap, coat);
+    }
+    let mut both = stroke.clone();
+    both.draw_pixmap(
+        0,
+        0,
+        pixmap.as_ref(),
+        &tiny_skia::PixmapPaint::default(),
+        Transform::identity(),
+        None,
+    );
+    let parts = DrawnParts {
+        rest: Arc::new(pixmap),
+        stroke: Arc::new(stroke),
+        behind: true,
+    };
+    Some((both, Some(parts)))
 }
 
 /// Fineness of strokes turned into shapes: a few times the text unit, itself about
@@ -1544,12 +1579,13 @@ pub fn outlines(layer: &Layer) -> Option<Outlines> {
 }
 
 /// Lays out and draws the layer's text at `px_per_unit` with its font, or the built-in
-/// one.
-fn draw(layer: &Layer, px_per_unit: f32) -> Option<(Laid, Pixmap)> {
+/// one; also in two parts when its effects leave the outline out (see `Layer::parts`).
+fn draw(layer: &Layer, px_per_unit: f32) -> Option<(Laid, Pixmap, Option<DrawnParts>)> {
     let text = layer.text.as_ref()?;
     let laid = lay(layer)?;
-    let pixmap = paint(&laid, text, px_per_unit)?;
-    Some((laid, pixmap))
+    let apart = crate::render::effects::leaves_strokes(&layer.effects);
+    let (pixmap, parts) = paint_parts(&laid, text, px_per_unit, apart)?;
+    Some((laid, pixmap, parts))
 }
 
 /// Layer units to pixels for a page density, so the longest side stays under
@@ -1578,6 +1614,8 @@ fn key(layer: &Layer, ppu: f32) -> u64 {
     serde_json::to_string(&layer.text)
         .unwrap_or_default()
         .hash(&mut h);
+    // Its outline apart, or not, as its effects change.
+    crate::render::effects::leaves_strokes(&layer.effects).hash(&mut h);
     layer
         .data
         .as_ref()
@@ -1640,17 +1678,18 @@ fn sync_layer(ctx: &egui::Context, layer: &mut Layer, fonts: &FontLibrary) -> bo
     }
     // Lay out at the current resolution; redraw if the box changed enough to need
     // another.
-    let Some((mut laid, mut pixmap)) = draw(layer, ppu) else {
+    let Some((mut laid, mut pixmap, mut parts)) = draw(layer, ppu) else {
         return false;
     };
     let ppu2 = screen_ppu(layer, laid.size, max_side);
     if ppu2 < ppu
-        && let Some((l, p)) = draw(layer, ppu2)
+        && let Some(again) = draw(layer, ppu2)
     {
-        (laid, pixmap) = (l, p);
+        (laid, pixmap, parts) = again;
     }
     place(layer, &laid);
     layer.text_state.key = key(layer, ppu2.min(ppu));
+    layer.parts = parts.map(Arc::new);
     set_screen_pixmap(ctx, layer, pixmap);
     true
 }
@@ -1730,7 +1769,8 @@ pub fn prepare_export(doc: &mut Document, dpi: f32) {
             return;
         }
         let ppu = px_per_unit(layer, layer.size_px, px_per_mm, EXPORT_SIDE);
-        if let Some((_, pixmap)) = draw(layer, ppu) {
+        if let Some((_, pixmap, parts)) = draw(layer, ppu) {
+            layer.parts = parts.map(Arc::new);
             layer.pixmap = Some(Arc::new(pixmap));
         }
     });
@@ -1739,6 +1779,11 @@ pub fn prepare_export(doc: &mut Document, dpi: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Draws laid out text at `px_per_unit`.
+    fn paint(laid: &Laid, text: &Text, px_per_unit: f32) -> Option<Pixmap> {
+        paint_parts(laid, text, px_per_unit, false).map(|(pixmap, _)| pixmap)
+    }
 
     fn builtin_font() -> FontRef<'static> {
         FontRef::new(epaint_default_fonts::UBUNTU_LIGHT).unwrap()
@@ -1920,6 +1965,35 @@ mod tests {
             &font,
         );
         assert!(outlined.size[0] > plain.size[0] + 5, "{:?}", outlined.size);
+    }
+
+    #[test]
+    fn the_outline_can_be_drawn_apart_behind_the_letters() {
+        let font = builtin_font();
+        let t = Text {
+            outline: true,
+            outline_width: 0.1,
+            color: [0, 0, 255, 255],
+            outline_color: [255, 0, 0, 255],
+            ..text("Hello")
+        };
+        let laid = layout(&t, &font);
+        assert!(paint_parts(&laid, &t, 1.0, false).unwrap().1.is_none());
+        let (both, parts) = paint_parts(&laid, &t, 1.0, true).unwrap();
+        let parts = parts.unwrap();
+        assert!(parts.behind);
+        let count = |pm: &Pixmap, red: bool| {
+            (pm.pixels().iter())
+                .filter(|p| p.alpha() == 255 && (p.red() == 255) == red)
+                .count()
+        };
+        assert!(count(&parts.stroke, true) > 0 && count(&parts.rest, true) == 0);
+        // Together as drawn in one: the letters over their outline.
+        assert_eq!(both.data(), paint(&laid, &t, 1.0).unwrap().data());
+        // No outline: nothing apart.
+        let plain = text("Hello");
+        let laid = layout(&plain, &font);
+        assert!(paint_parts(&laid, &plain, 1.0, true).unwrap().1.is_none());
     }
 
     #[test]

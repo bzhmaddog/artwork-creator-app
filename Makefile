@@ -241,7 +241,7 @@ deb: linux-portable python-linux
 	$(CARGO) deb --no-build --target $(LINUX) -o $(DIST)/
 
 appimage: linux-portable python-linux
-	sh scripts/appimage.sh $(LINUX_BIN) $(DIST)/$(APP)-linux-x86_64.AppImage
+	sh scripts/appimage.sh $(LINUX_BIN) $(DIST)/$(APP)-$(VERSION)-linux-x86_64.AppImage
 
 windows-setup: windows python-embed
 	sh scripts/windows-setup.sh $(WINDOWS_BIN)

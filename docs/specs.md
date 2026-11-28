@@ -815,6 +815,14 @@ page (a text's follow the font size).
 | Fade (linear) | toward (right, left, top, bottom), fade start, fully transparent at, curve |
 | Fade (radial) | center x / y, fade start, fully transparent at, curve, transparent center |
 
+- On a shape layer the color effects (Brightness / Contrast, Hue / Saturation, Grayscale,
+  Tint, Invert, Posterize, Threshold, and the plugins' that say so, such as Halftone) leave
+  the shape's stroke out, as they do a text's outline: the stroke comes back unchanged,
+  over the fill (a text's outline behind its letters), just before the first effect up the
+  list that isn't one, or at the end. So a shadow or a blur after a tint takes the stroke
+  too, and a tint after a shadow colors the stroke as well as its shadow. A shape with
+  nothing but its stroke (a line, or a shape with its fill off) keeps it in them.
+
 - Sepia, an effect of the app up to 0.20, is a Tint now: one saved in a project opens
   (or is pasted) as Tint in colorize mode with a sepia color, at the same amount.
 - The fades work along the layer's visible pixels, so margins added by a shadow or outline

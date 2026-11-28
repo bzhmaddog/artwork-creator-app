@@ -24,7 +24,7 @@ use tiny_skia::{
 
 use crate::document::gradient::Ink;
 use crate::document::text;
-use crate::document::{Affine, Document, Layer, P2};
+use crate::document::{Affine, Document, DrawnParts, Layer, P2};
 use crate::i18n::{tr_noop, translate};
 use crate::render::Outlines;
 use crate::render::effects::EffectInstance;
@@ -646,15 +646,16 @@ impl Shape {
     /// paint never covers its border. Each is filled with its color or gradient under
     /// its rule (non-zero but for a path's fill, see `fill_rule`), and is true when it is
     /// cut off at the outline (the painted strokes). Gradients span the shape's box,
-    /// stroke included.
-    pub fn coats(&self) -> Vec<(Path, Ink, bool, FillRule)> {
+    /// stroke included. Its own stroke comes apart.
+    fn coats(&self) -> (Vec<Coat>, Option<Coat>) {
         let Some(path) = self.path() else {
-            return Vec::new();
+            return (Vec::new(), None);
         };
         let frame = self
             .bounds()
             .and_then(|(lo, hi)| Rect::from_ltrb(lo[0], lo[1], hi[0], hi[1]));
         let mut out = Vec::new();
+        let mut own = None;
         if self.stroked() {
             let line = match self.dash {
                 DashStyle::Solid => Some(path.clone()),
@@ -667,7 +668,7 @@ impl Shape {
                     None,
                     frame,
                 );
-                out.push((stroke, ink, false, FillRule::Winding));
+                own = Some((stroke, ink, false, FillRule::Winding));
             }
         }
         if self.kind.closed() {
@@ -686,7 +687,7 @@ impl Shape {
             );
             out.insert(0, (path, ink, false, self.fill_rule()));
         }
-        out
+        (out, own)
     }
 
     /// Area it covers, stroke included, in mm in its own frame: min and max corners.
@@ -765,6 +766,9 @@ impl Shape {
         }
     }
 }
+
+/// A filled shape drawing part of a shape (see `Shape::coats`).
+type Coat = (Path, Ink, bool, FillRule);
 
 /// Control points of a quarter circle drawn as a cubic curve, as a fraction of its radius.
 const KAPPA: f32 = 0.552_284_8;
@@ -1626,12 +1630,12 @@ fn update_generated(layer: &mut Layer, px_per_unit: f32) {
 }
 
 /// The layer's shape as filled shapes (see `Shape::coats`), its fill drawn with what its
-/// generator made, if it has one.
-fn layer_coats(layer: &Layer) -> Vec<(Path, Ink, bool, FillRule)> {
+/// generator made, if it has one; its own stroke apart.
+fn layer_coats(layer: &Layer) -> (Vec<Coat>, Option<Coat>) {
     let Some(shape) = layer.shape.as_ref() else {
-        return Vec::new();
+        return (Vec::new(), None);
     };
-    let mut coats = shape.coats();
+    let (mut coats, stroke) = shape.coats();
     if generating(layer).is_some()
         && let Some((_, Some(tile))) = &layer.shape_state.generated
         && let Some(o) = layer.shape_state.origin
@@ -1646,11 +1650,12 @@ fn layer_coats(layer: &Layer) -> Vec<(Path, Ink, bool, FillRule)> {
             transform,
         };
     }
-    coats
+    (coats, stroke)
 }
 
-/// Draws the layer's shape at `px_per_unit` pixels per layer unit.
-fn draw(layer: &Layer, px_per_unit: f32) -> Option<Pixmap> {
+/// The layer's shape at `px_per_unit` pixels per layer unit, and the same in two parts,
+/// its stroke apart, when its effects leave the stroke out.
+fn draw_parts(layer: &Layer, px_per_unit: f32) -> Option<(Pixmap, Option<DrawnParts>)> {
     let shape = layer.shape.as_ref()?;
     let o = layer.shape_state.origin?;
     let [sw, sh] = layer.size_px.map(|v| v.max(1) as f32);
@@ -1666,7 +1671,9 @@ fn draw(layer: &Layer, px_per_unit: f32) -> Option<Pixmap> {
         None => ts,
     };
     let mut clip = None;
-    for (path, ink, clipped, rule) in layer_coats(layer) {
+    let (coats, stroke) = layer_coats(layer);
+    let coats_empty = coats.is_empty();
+    for (path, ink, clipped, rule) in coats {
         if clipped && clip.is_none() {
             let mut mask = Mask::new(pixmap.width(), pixmap.height())?;
             if let Some(outline) = shape.path() {
@@ -1678,7 +1685,32 @@ fn draw(layer: &Layer, px_per_unit: f32) -> Option<Pixmap> {
         let t = if clipped { paint_ts } else { ts };
         pixmap.fill_path(&path, &ink.paint(), rule, t, mask);
     }
-    Some(pixmap)
+    let Some((path, ink, _, rule)) = stroke else {
+        return Some((pixmap, None));
+    };
+    // With nothing but its stroke (a line, a shape with its fill off), the effects
+    // change the stroke: leaving it out would leave them nothing.
+    if coats_empty || !crate::render::effects::leaves_strokes(&layer.effects) {
+        pixmap.fill_path(&path, &ink.paint(), rule, ts, None);
+        return Some((pixmap, None));
+    }
+    let mut alone = Pixmap::new(pixmap.width(), pixmap.height())?;
+    alone.fill_path(&path, &ink.paint(), rule, ts, None);
+    let mut both = pixmap.clone();
+    both.draw_pixmap(
+        0,
+        0,
+        alone.as_ref(),
+        &tiny_skia::PixmapPaint::default(),
+        Transform::identity(),
+        None,
+    );
+    let parts = DrawnParts {
+        rest: std::sync::Arc::new(pixmap),
+        stroke: std::sync::Arc::new(alone),
+        behind: false,
+    };
+    Some((both, Some(parts)))
 }
 
 /// The layer's shape as filled shapes, for vector output such as PDF.
@@ -1687,7 +1719,9 @@ pub fn outlines(layer: &Layer) -> Option<Outlines> {
     let o = layer.shape_state.origin?;
     let ts = Transform::from_translate(-o[0], -o[1]).post_scale(UNITS_PER_MM, UNITS_PER_MM);
     // The paths, and the box a gradient spans, from the shape's mm to layer units.
-    let coats: Vec<_> = layer_coats(layer)
+    let (mut coats, stroke) = layer_coats(layer);
+    coats.extend(stroke);
+    let coats: Vec<_> = coats
         .into_iter()
         .filter_map(|(path, ink, clipped, rule)| {
             Some((path.transform(ts)?, ink.transformed(ts)?, clipped, rule))
@@ -1719,6 +1753,8 @@ fn key(layer: &Layer, ppu: f32) -> u64 {
     (layer.shape_state.generated.as_ref())
         .map(|(k, made)| (*k, made.is_some()))
         .hash(&mut h);
+    // Its stroke apart, or not, as its effects change.
+    crate::render::effects::leaves_strokes(&layer.effects).hash(&mut h);
     // Paint that doesn't stretch is drawn again as the shape is resized.
     if let Some(m) = paint_map(layer) {
         for v in [m.a, m.b, m.c, m.d, m.e, m.f] {
@@ -1745,8 +1781,9 @@ pub fn sync(ctx: &egui::Context, doc: &mut Document, settle: bool) -> bool {
         if layer.shape_state.key == key && layer.pixmap.is_some() {
             return;
         }
-        if let Some(pixmap) = draw(layer, ppu) {
+        if let Some((pixmap, parts)) = draw_parts(layer, ppu) {
             layer.shape_state.key = key;
+            layer.parts = parts.map(std::sync::Arc::new);
             text::set_screen_pixmap(ctx, layer, pixmap);
             changed = true;
         }
@@ -1765,7 +1802,8 @@ pub fn prepare_export(doc: &mut Document, dpi: f32) {
         layout(layer, true);
         let ppu = text::px_per_unit(layer, layer.size_px, px_per_mm, text::EXPORT_SIDE);
         update_generated(layer, ppu);
-        if let Some(pixmap) = draw(layer, ppu) {
+        if let Some((pixmap, parts)) = draw_parts(layer, ppu) {
+            layer.parts = parts.map(std::sync::Arc::new);
             layer.pixmap = Some(std::sync::Arc::new(pixmap));
         }
     });
@@ -1774,6 +1812,18 @@ pub fn prepare_export(doc: &mut Document, dpi: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The layer's shape at `px_per_unit`, as one image.
+    fn draw(layer: &Layer, px_per_unit: f32) -> Option<Pixmap> {
+        draw_parts(layer, px_per_unit).map(|(pixmap, _)| pixmap)
+    }
+
+    /// The filled shapes that draw `shape`, its stroke last.
+    fn all_coats(shape: &Shape) -> Vec<Coat> {
+        let (mut out, stroke) = shape.coats();
+        out.extend(stroke);
+        out
+    }
 
     fn close(a: P2, b: P2) -> bool {
         (a[0] - b[0]).abs() < 0.05 && (a[1] - b[1]).abs() < 0.05
@@ -1976,6 +2026,36 @@ mod tests {
         let s = l.shape.as_deref().unwrap();
         assert_eq!(s.kind, ShapeKind::Path);
         assert_eq!(s.contours.len(), 2);
+    }
+
+    #[test]
+    fn a_fill_only_effect_draws_the_stroke_apart() {
+        let invert = crate::render::effects::registry()
+            .get("builtin.invert")
+            .unwrap();
+        let mut l = layer(ShapeKind::Star);
+        l.shape.as_mut().unwrap().stroke_width = 2.0;
+        layout(&mut l, true);
+        let plain = key(&l, 1.0);
+        assert!(draw_parts(&l, 1.0).unwrap().1.is_none(), "no effects");
+        l.effects.push(EffectInstance::new(invert));
+        assert_ne!(key(&l, 1.0), plain, "drawn again in parts");
+        let (both, parts) = draw_parts(&l, 1.0).unwrap();
+        let parts = parts.unwrap();
+        assert!(!parts.behind);
+        let opaque = |pm: &Pixmap| pm.pixels().iter().filter(|p| p.alpha() == 255).count();
+        // The stroke is black, the fill steel blue: each part has its own.
+        let black = |pm: &Pixmap| {
+            (pm.pixels().iter())
+                .filter(|p| p.alpha() == 255 && p.blue() == 0)
+                .count()
+        };
+        assert!(black(&parts.stroke) > 100 && black(&parts.rest) == 0);
+        assert_eq!(black(&both), black(&parts.stroke));
+        assert!(opaque(&both) >= opaque(&parts.rest));
+        // Nothing but its stroke: the effects change it.
+        l.shape.as_mut().unwrap().fill = false;
+        assert!(draw_parts(&l, 1.0).unwrap().1.is_none(), "no fill");
     }
 
     #[test]
@@ -2238,7 +2318,7 @@ mod tests {
             &line,
             &crate::document::paint::Pen::new(Tool::Pencil, 3.0, [255, 0, 0, 255])
         ));
-        let coats = l.shape.as_ref().unwrap().coats();
+        let coats = all_coats(l.shape.as_ref().unwrap());
         assert_eq!(
             coats.iter().map(|c| c.2).collect::<Vec<_>>(),
             [false, true, false],
@@ -2262,11 +2342,7 @@ mod tests {
         set_kind(&mut line_layer, ShapeKind::Line);
         assert!(!paintable(&line_layer));
         assert!(
-            line_layer
-                .shape
-                .as_ref()
-                .unwrap()
-                .coats()
+            all_coats(line_layer.shape.as_ref().unwrap())
                 .iter()
                 .all(|c| !c.2)
         );

@@ -92,6 +92,13 @@ pub trait Effect: Send + Sync + 'static {
     ///
     /// Can be called from several threads at once, for different images.
     fn apply(&self, img: &mut Image, values: &Values, scale: f32) -> Result<(), String>;
+    /// True if it changes colors, not shapes (a tint, a halftone): on a shape or text
+    /// layer the app leaves the shape's stroke and the text's outline out of it, and draws
+    /// them back unchanged before the next effect that isn't one (a shadow, a blur) or
+    /// at the end. Apps before SDK 0.7.0 give it everything.
+    fn fill_only(&self) -> bool {
+        false
+    }
 }
 
 /// Draws a shape's fill, such as a pattern or a texture.
