@@ -1672,6 +1672,7 @@ fn draw_parts(layer: &Layer, px_per_unit: f32) -> Option<(Pixmap, Option<DrawnPa
     };
     let mut clip = None;
     let (coats, stroke) = layer_coats(layer);
+    let coats_empty = coats.is_empty();
     for (path, ink, clipped, rule) in coats {
         if clipped && clip.is_none() {
             let mut mask = Mask::new(pixmap.width(), pixmap.height())?;
@@ -1687,7 +1688,9 @@ fn draw_parts(layer: &Layer, px_per_unit: f32) -> Option<(Pixmap, Option<DrawnPa
     let Some((path, ink, _, rule)) = stroke else {
         return Some((pixmap, None));
     };
-    if !crate::render::effects::leaves_strokes(&layer.effects) {
+    // With nothing but its stroke (a line, a shape with its fill off), the effects
+    // change the stroke: leaving it out would leave them nothing.
+    if coats_empty || !crate::render::effects::leaves_strokes(&layer.effects) {
         pixmap.fill_path(&path, &ink.paint(), rule, ts, None);
         return Some((pixmap, None));
     }
@@ -2050,6 +2053,9 @@ mod tests {
         assert!(black(&parts.stroke) > 100 && black(&parts.rest) == 0);
         assert_eq!(black(&both), black(&parts.stroke));
         assert!(opaque(&both) >= opaque(&parts.rest));
+        // Nothing but its stroke: the effects change it.
+        l.shape.as_mut().unwrap().fill = false;
+        assert!(draw_parts(&l, 1.0).unwrap().1.is_none(), "no fill");
     }
 
     #[test]

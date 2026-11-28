@@ -187,12 +187,7 @@ impl EffectCache {
             Some(p) => {
                 let stroke = self.source(layer, &p.stroke)?;
                 let stroke = super::Stroke {
-                    img: image::imageops::resize(
-                        &*stroke,
-                        img.width(),
-                        img.height(),
-                        image::imageops::FilterType::Triangle,
-                    ),
+                    img: resize_premultiplied(&stroke, img.width(), img.height()),
                     behind: p.behind,
                 };
                 super::apply_with_stroke(&mut img, stroke, &layer.effects, scale)
@@ -250,6 +245,33 @@ impl EffectCache {
             spare <= SPARE
         });
     }
+}
+
+/// `img`, straight RGBA, at `w` x `h`, resampled premultiplied so that the empty
+/// pixels around an edge don't darken it.
+fn resize_premultiplied(img: &RgbaImage, w: u32, h: u32) -> RgbaImage {
+    if img.dimensions() == (w, h) {
+        return img.clone();
+    }
+    let mut pre = img.clone();
+    for p in pre.pixels_mut() {
+        let a = p.0[3] as u32;
+        for c in &mut p.0[..3] {
+            *c = ((*c as u32 * a + 127) / 255) as u8;
+        }
+    }
+    let mut out = image::imageops::resize(&pre, w, h, image::imageops::FilterType::Triangle);
+    for p in out.pixels_mut() {
+        let a = p.0[3] as u32;
+        if a == 0 {
+            p.0 = [0; 4];
+            continue;
+        }
+        for c in &mut p.0[..3] {
+            *c = ((*c as u32 * 255 + a / 2) / a).min(255) as u8;
+        }
+    }
+    out
 }
 
 /// Straight RGBA from premultiplied pixels.
@@ -318,6 +340,18 @@ mod tests {
         );
         // The margins are still those of the full-size image.
         assert!((done.pad[0] - 501.0).abs() < 5.0, "{:?}", done.pad);
+    }
+
+    #[test]
+    fn a_stroke_resized_keeps_its_color_at_its_edge() {
+        // Red next to an empty pixel: halved, still red, half transparent.
+        let mut img = RgbaImage::new(2, 1);
+        img.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
+        let out = resize_premultiplied(&img, 1, 1);
+        let [r, g, b, a] = out.get_pixel(0, 0).0;
+        assert!(r >= 250 && g == 0 && b == 0, "{:?}", out.get_pixel(0, 0));
+        assert!((100..=160).contains(&a), "{a}");
+        assert_eq!(resize_premultiplied(&img, 2, 1), img);
     }
 
     #[test]

@@ -763,6 +763,10 @@ impl Effect for FromOrigin<dyn Effect> {
         self.inner.padding(params)
     }
 
+    fn fill_only(&self) -> bool {
+        self.inner.fill_only()
+    }
+
     fn apply(&self, img: &mut RgbaImage, params: &Params, scale: f32) -> Result<(), String> {
         self.inner.apply(img, params, scale)
     }
@@ -1009,10 +1013,6 @@ pub unsafe fn from_table(
     Ok((info, effects, generators))
 }
 
-/// `count` tables at `ptr`, none if it is null.
-///
-/// # Safety
-/// `ptr` is null or points to `count` tables that outlive the slice.
 /// The effect tables of a plugin table before version 4 (see `abi::EffectTableV3`),
 /// with no flags.
 ///
@@ -1023,6 +1023,10 @@ unsafe fn old_effects(ptr: *const abi::EffectTable, count: u32) -> Vec<abi::Effe
     old.iter().map(|&t| t.into()).collect()
 }
 
+/// `count` tables at `ptr`, none if it is null.
+///
+/// # Safety
+/// `ptr` is null or points to `count` tables that outlive the slice.
 unsafe fn slice<'a, T>(ptr: *const T, count: u32) -> &'a [T] {
     if count == 0 || ptr.is_null() {
         &[]
@@ -1370,6 +1374,12 @@ mod tests {
     #[test]
     fn fill_only_effects_say_so_since_version_4() {
         assert!(fill().fill_only());
+        // Also under an id with its origin, as installed from a repository.
+        let installed = FromOrigin {
+            id: "origin/test.fill".into(),
+            inner: Box::new(fill()) as Box<dyn Effect>,
+        };
+        assert!(installed.fill_only());
         // A version 3 table: the same, its effect tables without flags.
         let t = table();
         let old: Vec<abi::EffectTableV3> = unsafe { slice(t.effects, t.effect_count) }

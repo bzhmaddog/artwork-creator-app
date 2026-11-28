@@ -1081,6 +1081,11 @@ pub fn apply_with_stroke(
 fn add_stroke(img: &mut RgbaImage, mut stroke: Stroke, pad: [u32; 4]) {
     grow(&mut stroke.img, pad);
     if stroke.img.dimensions() != img.dimensions() {
+        log::warn!(
+            "stroke left out: {:?} for an image of {:?}",
+            stroke.img.dimensions(),
+            img.dimensions()
+        );
         return;
     }
     let behind = stroke.behind;
