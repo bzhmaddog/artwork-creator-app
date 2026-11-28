@@ -962,16 +962,20 @@ look there, so `make run` finds the `plugins` folder of the repository.
   settings saved by a version older than the installed one's `compatible_from` are
   reported in one message listing their layers, since they may now be read differently;
   every saved version is then set to the installed one, so the project no longer warns
-  once saved. Updating downloads and checks the new file like Install, in the
+  once saved. The open project gets the same check when a plugin is installed, updated
+  or allowed without a restart. Updating downloads and checks the new file like Install, in the
   folder of the old one, which is replaced (set aside as `.<name>.old` beside it, never
-  loaded: a library in use can't be deleted on Windows); the new file is allowed, keeps
-  the old one's enabled or disabled state, and is loaded at once in place of the old one.
-  It is used from the next start only when it can't be (a disabled plugin, or more than 16
+  loaded: a library in use can't be deleted on Windows; `.<name>.<n>.old` while an older
+  copy set aside is still in use, deleted at a later update); the new file is allowed,
+  keeps the old one's enabled or disabled state, and is loaded at once in place of the old
+  one, which is unloaded only once the new one has loaded. It is used from the next start
+  only when it can't be (a disabled plugin, a new file that fails to load, or more than 16
   plugins installed or updated since startup): the row then shows a check mark, "Updated
   to x.y.z" in its tooltip, and the window offers the restart. A library loaded again
   since startup (installed again after it was uninstalled, or updated) is loaded from a
-  copy in the temporary folder, as the system would give the one already loaded from that
-  path.
+  copy in `plugin-copies` in the app's data folder (the user's own, not the temporary
+  folder that other users can write to), as the system would give the one already loaded
+  from that path.
 - **At startup**, the app also looks for a newer version of itself: the latest release's version,
   which the project's web page publishes with the download page. **Help > Update channel**
   chooses which: **Stable** (the default), the latest release that isn't a pre-release, in

@@ -895,11 +895,20 @@ pub fn load_library(path: &Path) -> Result<Contents, String> {
     unsafe { from_table(entry(), path, Some(library)) }
 }
 
-/// A copy of the library `path` under a name of its own, in the temporary folder. The
-/// copies other runs left there are deleted.
+/// Where the copies of libraries loaded again go: in the app's data folder, the user's
+/// own, not in the temporary folder, which other users can write to.
+fn copies_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    return Some(std::env::temp_dir().join(format!("artwork-copies-{}", std::process::id())));
+    #[cfg(not(test))]
+    crate::data_dir().map(|d| d.join("plugin-copies"))
+}
+
+/// A copy of the library `path` under a name of its own, in [`copies_dir`]. The copies
+/// other runs left there are deleted.
 fn fresh_copy(path: &Path) -> Result<PathBuf, String> {
     static COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let dir = std::env::temp_dir().join("artwork-creator-plugins");
+    let dir = copies_dir().ok_or("no data folder to copy the library to")?;
     let pid = std::process::id();
     let ours = format!("{pid}-");
     for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
@@ -1651,7 +1660,7 @@ mod tests {
         let name = format!("junk-again.{}", std::env::consts::DLL_EXTENSION);
         let path = dir.join(&name);
         std::fs::write(&path, "not a library").unwrap();
-        let copies = std::env::temp_dir().join("artwork-creator-plugins");
+        let copies = copies_dir().unwrap();
         let left = || {
             let mut files = std::fs::read_dir(&copies).into_iter().flatten().flatten();
             files.any(|f| f.file_name().to_string_lossy().ends_with(&name))
@@ -1669,9 +1678,7 @@ mod tests {
         assert_eq!(std::fs::read(&copy).unwrap(), b"not a library");
         let second = fresh_copy(&path).unwrap();
         assert_ne!(second, copy);
-        for f in [copy, second] {
-            let _ = std::fs::remove_file(f);
-        }
+        let _ = std::fs::remove_dir_all(copies);
         let _ = std::fs::remove_dir_all(dir);
     }
 

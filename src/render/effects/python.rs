@@ -930,6 +930,12 @@ plugin = Plugin("", "3", effects=[Grow()])
         std::fs::write(&new, SAMPLE.replace("\"1.0\"", "\"2.0\"")).unwrap();
         // Nothing loaded to replace: left for the next start.
         assert!(!reg.replace(&dirs[0].join("nope.py"), &new));
+        // A new version that fails to load leaves the old one loaded.
+        let broken = dirs[0].join("sample-broken.py");
+        std::fs::write(&broken, "raise SystemExit(3)\n").unwrap();
+        assert!(!reg.replace(&old, &broken));
+        assert!(reg.get("sample.halve").is_some());
+        assert!(reg.files().iter().any(|f| f.path == old));
         assert!(reg.replace(&old, &new));
         let versions: Vec<&str> = reg.plugins().map(|p| p.version.as_str()).collect();
         assert_eq!(versions, ["2.0"]);

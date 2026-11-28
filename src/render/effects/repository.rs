@@ -671,7 +671,7 @@ pub fn save(data: &[u8], d: &Download, dir: &Path) -> Result<PathBuf, String> {
 
 /// Moves the plugin file `path` out of the way, to `.<name>.old` beside it (never
 /// loaded): a library loaded by the app can't be replaced or deleted on Windows, but can
-/// be renamed. The copy set aside before it is deleted, or kept if it is still loaded
+/// be renamed. The copies set aside before are deleted, or kept while still loaded
 /// (`.<name>.<n>.old` then).
 pub fn set_aside(path: &Path) -> std::io::Result<()> {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
@@ -679,6 +679,18 @@ pub fn set_aside(path: &Path) -> std::io::Result<()> {
         0 => path.with_file_name(format!(".{name}.old")),
         n => path.with_file_name(format!(".{name}.{n}.old")),
     };
+    // The numbered ones too, left by earlier updates while their copy was loaded.
+    let numbered = format!(".{name}.");
+    let entries = path.parent().and_then(|d| std::fs::read_dir(d).ok());
+    for e in entries.into_iter().flatten().flatten() {
+        let f = e.file_name().to_string_lossy().into_owned();
+        let n = f
+            .strip_prefix(&numbered)
+            .and_then(|r| r.strip_suffix(".old"));
+        if n.is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())) {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
     let _ = std::fs::remove_file(aside(0));
     let old = (0..)
         .map(aside)
@@ -1117,6 +1129,12 @@ mod tests {
         std::fs::create_dir(dir.join(".p.py.old")).unwrap();
         set_aside(&path).unwrap();
         assert_eq!(std::fs::read(dir.join(".p.py.1.old")).unwrap(), data);
+        // Once it can be, the numbered copy is deleted at the next update.
+        std::fs::remove_dir(dir.join(".p.py.old")).unwrap();
+        std::fs::write(&path, b"new").unwrap();
+        set_aside(&path).unwrap();
+        assert!(!dir.join(".p.py.1.old").exists());
+        assert_eq!(std::fs::read(dir.join(".p.py.old")).unwrap(), b"new");
         let _ = std::fs::remove_dir_all(dir);
     }
 

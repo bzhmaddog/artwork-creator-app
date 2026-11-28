@@ -318,6 +318,34 @@ impl ArtworkApp {
         );
     }
 
+    /// Plugin settings saved by a version the one installed may read differently are
+    /// recorded as the installed version's from now on, a toast naming their layers. Run
+    /// when a project is opened and when plugins change (updated without a restart).
+    pub(super) fn update_plugin_versions(&mut self) {
+        let reg = crate::render::effects::registry();
+        self.plugin_generation = reg.generation();
+        let mut outdated = Vec::new();
+        self.doc.for_each_layer_mut(|layer| {
+            let generator = layer.shape.as_mut().and_then(|s| s.fill_generator.as_mut());
+            let mut older = false;
+            for inst in layer.effects.iter_mut().chain(generator) {
+                older |= reg.update_version(inst);
+            }
+            if older {
+                outdated.push(layer.name.clone());
+            }
+        });
+        if !outdated.is_empty() {
+            let text = tr!("PLUGIN_SETTINGS_OUTDATED", layers = outdated.join("\n"));
+            self.toasts.push(Toast::new(
+                "plugin_settings_outdated",
+                Intent::Warning,
+                tr!("PLUGIN_SETTINGS_OUTDATED_TITLE"),
+                &text,
+            ));
+        }
+    }
+
     /// Loads a project and its images. Missing images are reported and drawn crossed out.
     pub(super) fn open_project_path(&mut self, ctx: &egui::Context, path: PathBuf) {
         match project::load(&path) {
@@ -361,29 +389,7 @@ impl ArtworkApp {
                     self.messages
                         .push(tr!("FONTS_NOT_INSTALLED", fonts = fonts.join("\n")));
                 }
-                // Plugin settings saved by a version the one installed may read differently;
-                // they are recorded as the installed version's from now on.
-                let reg = crate::render::effects::registry();
-                let mut outdated = Vec::new();
-                self.doc.for_each_layer_mut(|layer| {
-                    let generator = layer.shape.as_mut().and_then(|s| s.fill_generator.as_mut());
-                    let mut older = false;
-                    for inst in layer.effects.iter_mut().chain(generator) {
-                        older |= reg.update_version(inst);
-                    }
-                    if older {
-                        outdated.push(layer.name.clone());
-                    }
-                });
-                if !outdated.is_empty() {
-                    let text = tr!("PLUGIN_SETTINGS_OUTDATED", layers = outdated.join("\n"));
-                    self.toasts.push(Toast::new(
-                        "plugin_settings_outdated",
-                        Intent::Warning,
-                        tr!("PLUGIN_SETTINGS_OUTDATED_TITLE"),
-                        &text,
-                    ));
-                }
+                self.update_plugin_versions();
                 // Its own copy of its template, placed as that says.
                 self.kept_fingerprint = None;
                 self.postponed_fingerprint = None;

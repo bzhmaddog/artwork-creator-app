@@ -768,15 +768,35 @@ impl Registry {
     }
 
     /// Loads the plugin installed at `path` in place of `old`, the version it updates,
-    /// which is unloaded: false if it can't be until the next start (`old` not loaded,
-    /// or no room left), `old` then left as it is.
+    /// which is unloaded once the new one has loaded: false if it can't be until the next
+    /// start (`old` not loaded, another file loaded at `path`, no room left, or the new
+    /// one fails to load), `old` then left as it is.
     pub fn replace(&self, old: &std::path::Path, path: &std::path::Path) -> bool {
-        let loaded = self.files().iter().any(|f| f.path == old);
-        if !loaded || self.installed.iter().all(|s| s.get().is_some()) {
+        let files = self.files();
+        let loaded = files.iter().any(|f| f.path == old);
+        let taken = path != old && files.iter().any(|f| f.path == path);
+        let Some(slot) = self.installed.iter().find(|s| s.get().is_none()) else {
+            return false;
+        };
+        if !loaded || taken {
+            return false;
+        }
+        // The ids of `old` are free for the new version, which may use them again.
+        let of_old: Vec<String> = (self.plugins().filter(|p| p.path == old))
+            .flat_map(|p| p.effects.iter().chain(&p.generators).cloned())
+            .collect();
+        let part = self.load_with(path, |id| {
+            !of_old.iter().any(|o| o == id) && self.params_of(id).is_some()
+        });
+        let failed = (part.files.iter()).any(|f| matches!(f.status, plugin::Status::Failed(_)));
+        if failed {
             return false;
         }
         self.remove(old);
-        self.add_installed(path)
+        let mut removed = self.removed.write().unwrap_or_else(|e| e.into_inner());
+        removed.files.retain(|f| f != path);
+        drop(removed);
+        slot.set(part).is_ok()
     }
 
     /// Unloads the plugin file `path`, uninstalled: its effects, generators and file are
@@ -820,6 +840,12 @@ impl Registry {
 
     /// The plugin file `path` loaded, checked against what is loaded already.
     fn load(&self, path: &std::path::Path) -> Part {
+        self.load_with(path, |id| self.params_of(id).is_some())
+    }
+
+    /// The plugin file `path` loaded, its effects and generators whose id is `taken`
+    /// left out.
+    fn load_with(&self, path: &std::path::Path, taken: impl Fn(&str) -> bool) -> Part {
         let file = path.file_name().unwrap_or_default().to_string_lossy();
         let mut loaded = plugin::Loaded::default();
         let result = plugin::load_file(path, python::python());
@@ -844,7 +870,7 @@ impl Registry {
             python: plugin::is_python(path),
             status,
         });
-        Part::checked(loaded, |id| self.params_of(id).is_some())
+        Part::checked(loaded, taken)
     }
 
     /// How many plugins were allowed, installed or uninstalled since startup: cached

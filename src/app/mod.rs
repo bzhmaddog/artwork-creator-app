@@ -181,6 +181,9 @@ pub struct ArtworkApp {
     /// The plugin manager was opened at the start for Python plugins waiting to be
     /// allowed (once).
     plugins_offered: bool,
+    /// The plugins' generation (see `Registry::generation`) the project's plugin
+    /// versions were last brought up to.
+    plugin_generation: usize,
     /// Which new versions of the app to tell about (Help > Update channel).
     update_channel: version_check::Channel,
     /// Looking for a newer version of the app, from the start (or a change of channel)
@@ -382,6 +385,7 @@ impl ArtworkApp {
             shortcuts_editor: None,
             plugin_manager: None,
             plugins_offered: false,
+            plugin_generation: crate::render::effects::registry().generation(),
             update_channel,
             version_check: version_check::start(update_channel),
             plugin_check: crate::ui::plugins::check_updates(),
@@ -801,6 +805,9 @@ impl eframe::App for ArtworkApp {
         self.app_update(&ctx);
         self.shortcuts_window(&ctx);
         self.plugins_window(&ctx);
+        if crate::render::effects::registry().generation() != self.plugin_generation {
+            self.update_plugin_versions();
+        }
         self.toasts(&ctx, status.right_top());
 
         // Record a step once the edit is over: no button held, no text being typed. A
