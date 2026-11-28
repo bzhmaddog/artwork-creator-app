@@ -60,6 +60,12 @@ pub trait Effect: Send + Sync {
     /// less on screen where a smaller copy is used. Multiply distances given in source
     /// pixels (like a blur radius) by it, so every size looks the same.
     fn apply(&self, img: &mut RgbaImage, params: &Params, scale: f32) -> Result<(), String>;
+    /// It changes colors, not shapes (a tint, a halftone): on a shape or text layer it
+    /// leaves out the shape's stroke and the text's outline, which come back unchanged
+    /// before the next effect that isn't one (a shadow, a blur) or at the end.
+    fn fill_only(&self) -> bool {
+        false
+    }
     /// Stops what runs it, its plugin uninstalled: it is not called again.
     fn unload(&self) {}
 }
@@ -1042,22 +1048,90 @@ fn grow(img: &mut RgbaImage, [l, t, r, b]: [u32; 4]) {
 /// Applies the enabled effects in order, each to what the one before it gave, with the
 /// margins it needs added just before it. Unknown effects are skipped.
 pub fn apply(img: &mut RgbaImage, stack: &[EffectInstance], scale: f32) -> Applied {
-    run(img, steps(stack), scale)
+    run(img, None, steps(stack), scale)
+}
+
+/// A drawn layer's stroke (a shape's) or outline (a text's) on its own, the size of the
+/// rest of its image, which the fill-only effects leave out (see `Effect::fill_only`):
+/// drawn over the rest, or `behind` it.
+pub struct Stroke {
+    pub img: RgbaImage,
+    pub behind: bool,
+}
+
+/// True if the stack has an enabled effect that leaves a stroke out, so a drawn layer
+/// draws its stroke on its own (see `Stroke`).
+pub fn leaves_strokes(stack: &[EffectInstance]) -> bool {
+    steps(stack).any(|(effect, _)| effect.fill_only())
+}
+
+/// [`apply`] to the image of a drawn layer without its stroke: the stroke joins it
+/// before the first effect that isn't fill-only, or at the end.
+pub fn apply_with_stroke(
+    img: &mut RgbaImage,
+    stroke: Stroke,
+    stack: &[EffectInstance],
+    scale: f32,
+) -> Applied {
+    run(img, Some(stroke), steps(stack), scale)
+}
+
+/// Lays `stroke` over `img` (or under it), both straight RGBA, `img` grown by `pad`
+/// around the stroke's size.
+fn add_stroke(img: &mut RgbaImage, mut stroke: Stroke, pad: [u32; 4]) {
+    grow(&mut stroke.img, pad);
+    if stroke.img.dimensions() != img.dimensions() {
+        return;
+    }
+    let behind = stroke.behind;
+    for (dst, src) in img.pixels_mut().zip(stroke.img.pixels()) {
+        let (top, bottom) = if behind {
+            (dst.0, src.0)
+        } else {
+            (src.0, dst.0)
+        };
+        dst.0 = over(top, bottom);
+    }
+}
+
+/// Straight RGBA `top` over `bottom`.
+fn over(top: [u8; 4], bottom: [u8; 4]) -> [u8; 4] {
+    let (ta, ba) = (top[3] as f32 / 255.0, bottom[3] as f32 / 255.0);
+    let a = ta + ba * (1.0 - ta);
+    if a <= 0.0 {
+        return [0; 4];
+    }
+    let mut out = [0u8; 4];
+    for i in 0..3 {
+        let c = (top[i] as f32 * ta + bottom[i] as f32 * ba * (1.0 - ta)) / a;
+        out[i] = c.round().clamp(0.0, 255.0) as u8;
+    }
+    out[3] = (a * 255.0).round() as u8;
+    out
 }
 
 fn run<'a>(
     img: &mut RgbaImage,
+    mut stroke: Option<Stroke>,
     steps: impl Iterator<Item = (&'static dyn Effect, Params<'a>)>,
     scale: f32,
 ) -> Applied {
     let mut done = Applied::default();
     for (effect, params) in steps {
+        if !effect.fill_only()
+            && let Some(s) = stroke.take()
+        {
+            add_stroke(img, s, done.pad);
+        }
         let total = add_padding(done.pad, effect_padding(effect, &params, scale));
         grow(img, std::array::from_fn(|i| total[i] - done.pad[i]));
         done.pad = total;
         if let Err(e) = effect.apply(img, &params, scale) {
             done.errors.push(format!("{}: {e}", effect.name()));
         }
+    }
+    if let Some(s) = stroke {
+        add_stroke(img, s, done.pad);
     }
     done
 }
@@ -1067,11 +1141,16 @@ fn run<'a>(
 /// lose some.
 pub fn apply_pixmap(
     src: &Pixmap,
+    stroke: Option<(&Pixmap, bool)>,
     stack: &[EffectInstance],
     scale: f32,
 ) -> Option<(Pixmap, [u32; 4])> {
     let mut img = cache::demultiply(src);
-    let done = apply(&mut img, stack, scale);
+    let stroke = stroke.map(|(pm, behind)| Stroke {
+        img: cache::demultiply(pm),
+        behind,
+    });
+    let done = run(&mut img, stroke, steps(stack), scale);
     for e in done.errors {
         log::warn!("effect failed: {e}");
     }
@@ -1109,6 +1188,46 @@ pub fn par_pixels(img: &mut RgbaImage, f: impl Fn(&mut [u8; 4]) + Sync) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stroke_joins_before_the_first_effect_that_takes_it() {
+        let reg = registry();
+        let effect = |id: &str| EffectInstance::new(reg.get(id).unwrap());
+        let mut blur = effect("builtin.blur");
+        blur.params.insert("radius".into(), Value::from(0.0));
+        // A red image, its stroke a blue pixel over it and one where it is empty.
+        let mut rest = RgbaImage::from_pixel(3, 1, image::Rgba([255, 0, 0, 255]));
+        rest.put_pixel(2, 0, image::Rgba([0; 4]));
+        let mut line = RgbaImage::new(3, 1);
+        line.put_pixel(1, 0, image::Rgba([0, 0, 255, 255]));
+        line.put_pixel(2, 0, image::Rgba([0, 0, 255, 255]));
+        let stroke = |behind| Stroke {
+            img: line.clone(),
+            behind,
+        };
+        // Invert leaves it out: it comes back over the inverted red, as it was.
+        let mut img = rest.clone();
+        apply_with_stroke(&mut img, stroke(false), &[effect("builtin.invert")], 1.0);
+        let px = |img: &RgbaImage| img.pixels().map(|p| p.0).collect::<Vec<_>>();
+        assert_eq!(
+            px(&img),
+            [[0, 255, 255, 255], [0, 0, 255, 255], [0, 0, 255, 255]]
+        );
+        // Behind: under the image, showing only where it is empty.
+        let mut img = rest.clone();
+        apply_with_stroke(&mut img, stroke(true), &[effect("builtin.invert")], 1.0);
+        assert_eq!(
+            px(&img),
+            [[0, 255, 255, 255], [0, 255, 255, 255], [0, 0, 255, 255]]
+        );
+        // A blur first takes it, so the invert after it changes it too.
+        let mut img = rest.clone();
+        let stack = [blur, effect("builtin.invert")];
+        apply_with_stroke(&mut img, stroke(false), &stack, 1.0);
+        assert_eq!(px(&img)[1], [255, 255, 0, 255]);
+        assert!(leaves_strokes(&stack));
+        assert!(!leaves_strokes(&stack[..1]));
+    }
 
     #[test]
     fn random_seeds_stay_in_range_and_change() {
@@ -1382,14 +1501,14 @@ mod tests {
         // The margins the later effect needs are not there yet for the first one.
         let mut img = RgbaImage::new(2, 2);
         let fill_then_pad = [fill, margin].map(|e| (e, Params::new(&[], &values)));
-        let done = run(&mut img, fill_then_pad.into_iter(), 1.0);
+        let done = run(&mut img, None, fill_then_pad.into_iter(), 1.0);
         assert_eq!((done.pad, img.dimensions()), ([2; 4], (6, 6)));
         // Each one painted the whole image it got: the last one over all of it.
         assert_eq!(img.get_pixel(0, 0).0, [0, 0, 255, 255]);
         // The margins come before the effect that asked for them.
         let mut img = RgbaImage::new(2, 2);
         let pad_then_fill = [margin, fill].map(|e| (e, Params::new(&[], &values)));
-        run(&mut img, pad_then_fill.into_iter(), 1.0);
+        run(&mut img, None, pad_then_fill.into_iter(), 1.0);
         assert_eq!(img.get_pixel(0, 0).0, [255, 0, 0, 255]);
     }
 

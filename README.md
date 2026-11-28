@@ -195,7 +195,8 @@ Other languages can implement the C interface described in
 [`plugin-sdk/include/artwork_plugin.h`](plugin-sdk/include/artwork_plugin.h): one
 exported function, `artwork_plugin_entry`, returning a table of effects and generators
 whose parameters and values are passed as JSON. The app still loads plugins made for
-versions 1 (effects only) and 2 (no translations) of this interface.
+versions 1 (effects only), 2 (no translations) and 3 (no `fill_only` flag) of this
+interface.
 
 In Python, write one `.py` file defining `plugin = Plugin(name, version, effects=[...],
 generators=[...])` with subclasses of `Effect` (`apply(image, values, scale)`) and
@@ -209,6 +210,13 @@ app's own Python installs them when the plugin is allowed. The module's docstrin
 protocol between the app and the plugin: a line of JSON each way over stdin and stdout.
 See the Python plugins of
 [artwork-creator-plugins](https://github.com/bzhmaddog/artwork-creator-plugins).
+
+An effect that changes colors, not shapes (a tint, a halftone), says so with `fill_only`
+(`fn fill_only` returning true in Rust, `fill_only = True` in Python, the
+`ARTWORK_EFFECT_FILL_ONLY` flag in C): the app then leaves a shape's stroke and a text's
+outline out of it and draws them back unchanged after it. This needs plugin SDK 0.7.0:
+plugin interface version 4 for a library, which older apps don't load; older apps ignore it
+in a Python plugin.
 
 Effect and generator ids are saved in projects, so keep them stable and prefix them with
 something unique to your plugin (`builtin.` is reserved). Both may run on several threads

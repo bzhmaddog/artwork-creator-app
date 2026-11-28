@@ -458,6 +458,7 @@ fn load_parts(
         effects.push(PythonEffect {
             part: describe("effect", &e)?,
             padding: e.get("padding") == Some(&Value::Bool(true)),
+            fill_only: e.get("fill_only") == Some(&Value::Bool(true)),
         });
     }
     let mut generators = Vec::new();
@@ -529,6 +530,8 @@ struct PythonEffect {
     part: Part,
     /// Whether it draws outside the image.
     padding: bool,
+    /// See `Effect::fill_only`; SDKs before 0.7.0 don't say.
+    fill_only: bool,
 }
 
 impl Effect for PythonEffect {
@@ -550,6 +553,10 @@ impl Effect for PythonEffect {
 
     fn plugin(&self) -> Option<&str> {
         Some(&self.part.plugin)
+    }
+
+    fn fill_only(&self) -> bool {
+        self.fill_only
     }
 
     fn padding(&self, params: &Params) -> [f32; 4] {
@@ -678,6 +685,7 @@ class Grow(Effect):
     id = "test.grow"
     name = "Grow"
     params = [float_param("margin", "Margin", 0, 10, 2), bool_param("die", "Die", False)]
+    fill_only = True
 
     def padding(self, values):
         return (values["margin"], 0, 1, float("nan"))
@@ -785,6 +793,9 @@ plugin = Plugin("", "3", effects=[Grow()])
         let inst = EffectInstance::new(halve.as_ref());
         let params = Params::new(halve.params(), &inst.params);
         assert_eq!(halve.padding(&params), [0.0; 4]);
+        assert!(!halve.fill_only());
+        let grow = loaded.effects.iter().find(|e| e.id() == "test.grow");
+        assert!(grow.unwrap().fill_only());
         let mut img = RgbaImage::from_pixel(3, 2, image::Rgba([10, 200, 100, 7]));
         halve.apply(&mut img, &params, 1.0).unwrap();
         assert_eq!(img.get_pixel(2, 1).0, [5, 100, 50, 7]);

@@ -30,6 +30,7 @@ class Fill(ap.Effect):
 
 class Shrink(ap.Effect):
     id = "test.shrink"
+    fill_only = True
 
     def apply(self, image, values, scale):
         del image.pixels[:4]
@@ -94,8 +95,8 @@ class SdkTest(unittest.TestCase):
         [(answer, _)] = exchange(PLUGIN, ({"op": "describe"}, b""))
         self.assertTrue(answer["ok"])
         self.assertEqual((answer["name"], answer["version"]), ("Test", "2.0"))
-        self.assertEqual([(e["id"], e["padding"]) for e in answer["effects"]],
-                         [("test.fill", True), ("test.shrink", False)])
+        self.assertEqual([(e["id"], e["padding"], e["fill_only"]) for e in answer["effects"]],
+                         [("test.fill", True, False), ("test.shrink", False, True)])
         self.assertEqual(answer["generators"][0]["id"], "test.dot")
 
     def test_describe_in_a_language(self):

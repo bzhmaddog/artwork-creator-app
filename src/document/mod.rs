@@ -534,6 +534,19 @@ pub struct Layer {
     /// `EffectCache`; not kept in undo snapshots.
     #[serde(skip)]
     pub fx: Option<Processed>,
+    /// A text or shape layer drawn in two parts while its effects leave its stroke out
+    /// (see `effects::leaves_strokes`); `pixmap` still has both.
+    #[serde(skip)]
+    pub parts: Option<Arc<DrawnParts>>,
+}
+
+/// A drawn layer's pixels in two parts, each the size of its `pixmap`, premultiplied:
+/// its stroke (a shape's) or outline (a text's), and the rest.
+pub struct DrawnParts {
+    pub rest: Arc<tiny_skia::Pixmap>,
+    pub stroke: Arc<tiny_skia::Pixmap>,
+    /// The stroke goes behind the rest (a text's outline), not over it.
+    pub behind: bool,
 }
 
 impl Layer {
@@ -575,6 +588,7 @@ impl Layer {
             texture: None,
             broken: false,
             fx: None,
+            parts: None,
         }
     }
 

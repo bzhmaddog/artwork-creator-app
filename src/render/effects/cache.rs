@@ -130,9 +130,8 @@ impl EffectCache {
         true
     }
 
-    /// The layer's unprocessed screen copy.
-    fn source(&mut self, layer: &Layer) -> Option<Arc<RgbaImage>> {
-        let pm = layer.pixmap.as_ref()?;
+    /// The layer's unprocessed screen copy: of `pm`, its pixmap or one of its parts.
+    fn source(&mut self, layer: &Layer, pm: &Arc<Pixmap>) -> Option<Arc<RgbaImage>> {
         let ptr = Arc::as_ptr(pm) as usize;
         if let Some(img) = self.sources.get(&ptr) {
             return Some(img.clone());
@@ -159,7 +158,12 @@ impl EffectCache {
         key: u64,
         quick: bool,
     ) -> Option<Processed> {
-        let src = self.source(layer)?;
+        // Without its stroke, for the effects that leave it out (see `Layer::parts`).
+        let parts = layer.parts.as_deref();
+        let src = match parts {
+            Some(p) => self.source(layer, &p.rest)?,
+            None => self.source(layer, layer.pixmap.as_ref()?)?,
+        };
         let side = if quick { QUICK_SIDE } else { SCREEN_SIDE };
         let mut img = render::downscale(&src, side).into_owned();
         // The margins the effects add count too: a wide outline or shadow would otherwise
@@ -179,7 +183,22 @@ impl EffectCache {
         }
         let scale = img.width() as f32 / layer.size_px[0].max(1) as f32;
         let scale_y = img.height() as f32 / layer.size_px[1].max(1) as f32;
-        let done = super::apply(&mut img, &layer.effects, scale);
+        let done = match parts {
+            Some(p) => {
+                let stroke = self.source(layer, &p.stroke)?;
+                let stroke = super::Stroke {
+                    img: image::imageops::resize(
+                        &*stroke,
+                        img.width(),
+                        img.height(),
+                        image::imageops::FilterType::Triangle,
+                    ),
+                    behind: p.behind,
+                };
+                super::apply_with_stroke(&mut img, stroke, &layer.effects, scale)
+            }
+            None => super::apply(&mut img, &layer.effects, scale),
+        };
         for e in &done.errors {
             log::warn!("layer {}: {e}", layer.name);
         }
@@ -207,9 +226,15 @@ impl EffectCache {
     fn trim(&mut self, doc: &Document) {
         let mut used = std::collections::HashSet::new();
         for leaf in doc.leaves() {
-            if super::is_active(&leaf.layer.effects)
-                && let Some(pm) = &leaf.layer.pixmap
-            {
+            if !super::is_active(&leaf.layer.effects) {
+                continue;
+            }
+            let parts = leaf.layer.parts.as_deref();
+            let pms = [leaf.layer.pixmap.as_ref()]
+                .into_iter()
+                .chain(parts.map(|p| Some(&p.rest)))
+                .chain(parts.map(|p| Some(&p.stroke)));
+            for pm in pms.flatten() {
                 used.insert(Arc::as_ptr(pm) as usize);
             }
         }
@@ -293,6 +318,41 @@ mod tests {
         );
         // The margins are still those of the full-size image.
         assert!((done.pad[0] - 501.0).abs() < 5.0, "{:?}", done.pad);
+    }
+
+    #[test]
+    fn a_shape_stroke_stays_out_of_fill_only_effects_on_screen() {
+        use crate::document::shape::{self, ShapeKind};
+        let ctx = egui::Context::default();
+        // A blue square, its thick stroke red, inverted.
+        let mut l = shape::new_layer(1, ShapeKind::Rectangle, [30.0, 30.0]);
+        {
+            let s = l.shape.as_mut().unwrap();
+            s.size = [40.0, 40.0];
+            s.fill_color = [0, 0, 255, 255];
+            s.stroke_color = [255, 0, 0, 255];
+            s.stroke_width = 6.0;
+        }
+        l.effects.push(EffectInstance::new(
+            registry().get("builtin.invert").unwrap(),
+        ));
+        let mut doc = Document {
+            layers: vec![Node::Layer(Box::new(l))],
+            next_id: 2,
+            ..Default::default()
+        };
+        shape::sync(&ctx, &mut doc, true);
+        assert!(doc.layer(1).unwrap().parts.is_some());
+        let mut cache = EffectCache::default();
+        assert!(cache.sync(&ctx, &mut doc, false));
+        let pm = fx(&doc).unwrap().preview;
+        let rgb = |x: u32, y: u32| {
+            let p = pm.pixel(x, y).unwrap().demultiply();
+            (p.red(), p.green(), p.blue())
+        };
+        let (w, h) = (pm.width(), pm.height());
+        assert_eq!(rgb(w / 2, h / 2), (255, 255, 0), "the fill inverted");
+        assert_eq!(rgb(w / 100, h / 2), (255, 0, 0), "the stroke as it was");
     }
 
     #[test]

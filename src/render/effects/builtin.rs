@@ -32,6 +32,8 @@ struct Builtin {
     params: Vec<ParamSpec>,
     apply: ApplyFn,
     padding: PaddingFn,
+    /// See `Effect::fill_only`.
+    fill_only: bool,
 }
 
 impl Effect for Builtin {
@@ -53,6 +55,9 @@ impl Effect for Builtin {
     fn padding(&self, params: &Params) -> [f32; 4] {
         (self.padding)(params)
     }
+    fn fill_only(&self) -> bool {
+        self.fill_only
+    }
 }
 
 fn effect(
@@ -69,6 +74,27 @@ fn effect(
         params,
         apply,
         padding: |_| [0.0; 4],
+        fill_only: false,
+    })
+}
+
+/// An effect that changes colors only, so it leaves a stroke out (see
+/// `Effect::fill_only`).
+fn recolor(
+    id: &'static str,
+    name: &'static str,
+    description: &'static str,
+    params: Vec<ParamSpec>,
+    apply: ApplyFn,
+) -> Box<dyn Effect> {
+    Box::new(Builtin {
+        id,
+        name,
+        description,
+        params,
+        apply,
+        padding: |_| [0.0; 4],
+        fill_only: true,
     })
 }
 
@@ -81,7 +107,7 @@ fn percent(id: &str, label: &str, min: f32, max: f32, default: f32) -> ParamSpec
 /// The built-in effects, in menu order.
 pub fn all() -> Vec<Box<dyn Effect>> {
     vec![
-        effect(
+        recolor(
             "builtin.brightness_contrast",
             tr_noop!("EFFECT_BRIGHTNESS_CONTRAST"),
             tr_noop!("EFFECT_BRIGHTNESS_CONTRAST_HINT"),
@@ -97,7 +123,7 @@ pub fn all() -> Vec<Box<dyn Effect>> {
             ],
             brightness_contrast,
         ),
-        effect(
+        recolor(
             "builtin.hue_saturation",
             tr_noop!("EFFECT_HUE_SATURATION"),
             tr_noop!("EFFECT_HUE_SATURATION_HINT"),
@@ -117,7 +143,7 @@ pub fn all() -> Vec<Box<dyn Effect>> {
             ],
             hue_saturation,
         ),
-        effect(
+        recolor(
             "builtin.grayscale",
             tr_noop!("EFFECT_GRAYSCALE"),
             tr_noop!("EFFECT_GRAYSCALE_HINT"),
@@ -130,7 +156,7 @@ pub fn all() -> Vec<Box<dyn Effect>> {
             )],
             grayscale,
         ),
-        effect(
+        recolor(
             "builtin.tint",
             tr_noop!("EFFECT_TINT"),
             tr_noop!("EFFECT_TINT_HINT"),
@@ -150,21 +176,21 @@ pub fn all() -> Vec<Box<dyn Effect>> {
             ],
             tint,
         ),
-        effect(
+        recolor(
             "builtin.invert",
             tr_noop!("EFFECT_INVERT"),
             tr_noop!("EFFECT_INVERT_HINT"),
             vec![],
             invert,
         ),
-        effect(
+        recolor(
             "builtin.posterize",
             tr_noop!("EFFECT_POSTERIZE"),
             tr_noop!("EFFECT_POSTERIZE_HINT"),
             vec![ParamSpec::int("levels", tr_noop!("PARAM_LEVELS"), 2, 64, 4)],
             posterize,
         ),
-        effect(
+        recolor(
             "builtin.threshold",
             tr_noop!("EFFECT_THRESHOLD"),
             tr_noop!("EFFECT_THRESHOLD_HINT"),
@@ -196,6 +222,7 @@ pub fn all() -> Vec<Box<dyn Effect>> {
             ],
             apply: drop_shadow,
             padding: shadow_padding,
+            fill_only: false,
         }),
         Box::new(Builtin {
             id: "builtin.outline",
@@ -233,6 +260,7 @@ pub fn all() -> Vec<Box<dyn Effect>> {
             ],
             apply: outline,
             padding: outline_padding,
+            fill_only: false,
         }),
         effect(
             "builtin.fade_linear",

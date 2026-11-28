@@ -170,6 +170,10 @@ impl Effect for NativeEffect {
         Some(&self.plugin)
     }
 
+    fn fill_only(&self) -> bool {
+        self.table.flags & abi::EFFECT_FILL_ONLY != 0
+    }
+
     fn padding(&self, params: &Params) -> [f32; 4] {
         let Some(padding) = self.table.padding else {
             return [0.0; 4];
@@ -890,18 +894,23 @@ pub unsafe fn from_table(
     let (name, plugin_version, effect_tables, generator_tables, other_texts) = match version {
         1 => {
             let t = unsafe { &*(table as *const abi::PluginTableV1) };
-            let effects = unsafe { slice(t.effects, t.effect_count) };
+            let effects = unsafe { old_effects(t.effects, t.effect_count) };
             unsafe { (string(t.name), string(t.version), effects, &[][..], None) }
         }
         2 => {
             let t = unsafe { &*(table as *const abi::PluginTableV2) };
-            let effects = unsafe { slice(t.effects, t.effect_count) };
+            let effects = unsafe { old_effects(t.effects, t.effect_count) };
             let generators = unsafe { slice(t.generators, t.generator_count) };
             unsafe { (string(t.name), string(t.version), effects, generators, None) }
         }
-        abi::ABI_VERSION => {
+        // The same plugin table; version 4's effect tables end with their flags.
+        3 | abi::ABI_VERSION => {
             let t = unsafe { &*table };
-            let effects = unsafe { slice(t.effects, t.effect_count) };
+            let effects = if version == 3 {
+                unsafe { old_effects(t.effects, t.effect_count) }
+            } else {
+                unsafe { slice(t.effects, t.effect_count) }.to_vec()
+            };
             let generators = unsafe { slice(t.generators, t.generator_count) };
             let other = t.texts.map(|f| (f, t.texts_data));
             unsafe {
@@ -932,7 +941,7 @@ pub unsafe fn from_table(
     };
     let mut ids: Vec<String> = Vec::new();
     let mut effects = Vec::with_capacity(effect_tables.len());
-    for e in effect_tables {
+    for e in &effect_tables {
         // SAFETY: the strings are NUL-terminated or null.
         let d = unsafe { describe("effect", e.id, e.name, e.description, e.params_json, &ids) }?;
         ids.push(d.id.clone());
@@ -1004,6 +1013,16 @@ pub unsafe fn from_table(
 ///
 /// # Safety
 /// `ptr` is null or points to `count` tables that outlive the slice.
+/// The effect tables of a plugin table before version 4 (see `abi::EffectTableV3`),
+/// with no flags.
+///
+/// # Safety
+/// As [`slice`], `ptr` pointing to version 3 effect tables.
+unsafe fn old_effects(ptr: *const abi::EffectTable, count: u32) -> Vec<abi::EffectTable> {
+    let old = unsafe { slice(ptr as *const abi::EffectTableV3, count) };
+    old.iter().map(|&t| t.into()).collect()
+}
+
 unsafe fn slice<'a, T>(ptr: *const T, count: u32) -> &'a [T] {
     if count == 0 || ptr.is_null() {
         &[]
@@ -1211,6 +1230,9 @@ mod tests {
         fn padding(&self, v: &Values) -> [f32; 4] {
             [v.f32("margin"); 4]
         }
+        fn fill_only(&self) -> bool {
+            true
+        }
         fn apply(&self, img: &mut Image, v: &Values, _scale: f32) -> Result<(), String> {
             match v.choice("fail") {
                 "err" => return Err("asked to fail".into()),
@@ -1343,6 +1365,34 @@ mod tests {
             generators: t.generators,
         }));
         v2 as *const abi::PluginTableV2 as *const abi::PluginTable
+    }
+
+    #[test]
+    fn fill_only_effects_say_so_since_version_4() {
+        assert!(fill().fill_only());
+        // A version 3 table: the same, its effect tables without flags.
+        let t = table();
+        let old: Vec<abi::EffectTableV3> = unsafe { slice(t.effects, t.effect_count) }
+            .iter()
+            .map(|e| abi::EffectTableV3 {
+                id: e.id,
+                name: e.name,
+                description: e.description,
+                params_json: e.params_json,
+                user_data: e.user_data,
+                padding: e.padding,
+                apply: e.apply,
+            })
+            .collect();
+        let old = Box::leak(old.into_boxed_slice());
+        let v3 = Box::leak(Box::new(abi::PluginTable {
+            abi_version: 3,
+            effects: old.as_ptr() as *const abi::EffectTable,
+            ..*t
+        }));
+        let (_, effects, gens) = unsafe { from_table(v3, Path::new("v3.so"), None) }.unwrap();
+        assert!(!effects[0].fill_only());
+        assert_eq!(gens.len(), 1);
     }
 
     #[test]
