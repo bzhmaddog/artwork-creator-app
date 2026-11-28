@@ -257,6 +257,13 @@ fn stack_ui(
                     .body(|ui| {
                         if let Some(e) = effect {
                             ui.add_enabled_ui(inst.enabled, |ui| {
+                                // Only text and shape layers have a stroke to leave out.
+                                if e.fill_only() && px_mm.is_some() {
+                                    changed |= ui
+                                        .checkbox(&mut inst.with_stroke, tr!("EFFECT_WITH_STROKE"))
+                                        .on_hover_text(tr!("EFFECT_WITH_STROKE_HINT"))
+                                        .changed();
+                                }
                                 changed |= params_ui(ui, (layer_id, i), e, inst, px_mm);
                             });
                         } else {
@@ -988,6 +995,7 @@ mod tests {
                 links: Default::default(),
                 plugin: None,
                 name: None,
+                with_stroke: false,
             })
             .collect()
     }
@@ -1077,6 +1085,51 @@ mod tests {
                 params_ui(ui, (1, 0), effect, &mut inst.borrow_mut(), None);
             });
         });
+    }
+
+    #[test]
+    fn a_fill_only_effect_can_include_the_stroke() {
+        let mut stack = stack(&["builtin.invert"]);
+        let ctx = egui::Context::default();
+        let mut time = 0.0;
+        // One frame; returns where the checkbox's label is, if shown, and whether the
+        // stack changed.
+        let mut frame = |stack: &mut Vec<EffectInstance>, drawn: bool, events| {
+            time += 0.1;
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    vec2(400.0, 300.0),
+                )),
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            let px_mm = drawn.then_some((1.0, ""));
+            let mut changed = false;
+            let mut out = ctx.run_ui(input, |ui| changed = stack_ui(ui, 1, stack, px_mm));
+            out.textures_delta.clear();
+            let label = out.shapes.iter().find_map(|c| match &c.shape {
+                egui::Shape::Text(t) if t.galley.text() == "Include the stroke" => {
+                    Some(egui::Rect::from_min_size(t.pos, t.galley.size()).center())
+                }
+                _ => None,
+            });
+            (label, changed)
+        };
+        // An image layer has no stroke to leave out: no checkbox.
+        assert!(frame(&mut stack, false, vec![]).0.is_none());
+        let at = frame(&mut stack, true, vec![]).0.expect("the checkbox");
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame(&mut stack, true, vec![egui::Event::PointerMoved(at)]);
+        frame(&mut stack, true, vec![button(true)]);
+        assert!(frame(&mut stack, true, vec![button(false)]).1);
+        assert!(stack[0].with_stroke);
     }
 
     #[test]

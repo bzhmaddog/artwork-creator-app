@@ -918,6 +918,27 @@ plugin = Plugin("", "3", effects=[Grow()])
     }
 
     #[test]
+    fn an_updated_plugin_replaces_the_old_one_at_once() {
+        let Some(_) = python() else {
+            return;
+        };
+        let dir = folder("replace", &[("sample.py", SAMPLE)]);
+        let dirs = [dir.canonicalize().unwrap()];
+        let old = dirs[0].join("sample.py");
+        let new = dirs[0].join("sample-2.py");
+        let reg = Registry::with_plugins(&dirs, &allow_all(&dirs[0]));
+        std::fs::write(&new, SAMPLE.replace("\"1.0\"", "\"2.0\"")).unwrap();
+        // Nothing loaded to replace: left for the next start.
+        assert!(!reg.replace(&dirs[0].join("nope.py"), &new));
+        assert!(reg.replace(&old, &new));
+        let versions: Vec<&str> = reg.plugins().map(|p| p.version.as_str()).collect();
+        assert_eq!(versions, ["2.0"]);
+        assert!(reg.get("sample.halve").is_some());
+        assert!(reg.files().iter().all(|f| f.path != old));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn python_plugins_give_their_texts_in_the_app_s_languages() {
         let Some(py) = python() else {
             return;

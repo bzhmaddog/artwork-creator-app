@@ -690,7 +690,7 @@ that folds them away.
   "Missing generator" (its repository and name in the tooltip, as a missing effect is
   named), with an Install button when one of the user's repositories has
   the plugin, is not drawn, and is saved unchanged. One of the generators that came with
-  the app is read as the official repository's plugin of the same name.
+  the app is read (opened or pasted) as the official repository's plugin of the same name.
 - The magic wand button next to the generator menu (for a generator with a seed
   setting) draws another random picture with the same settings. A new generated fill,
   or one switched to another generator, starts with a random picture too. The picture
@@ -822,6 +822,8 @@ page (a text's follow the font size).
   list that isn't one, or at the end. So a shadow or a blur after a tint takes the stroke
   too, and a tint after a shadow colors the stroke as well as its shadow. A shape with
   nothing but its stroke (a line, or a shape with its fill off) keeps it in them.
+  **Include the stroke**, a checkbox of each of these effects on a text or shape layer,
+  makes that one take the stroke (or outline) too, as the other effects do.
 
 - Sepia, an effect of the app up to 0.20, is a Tint now: one saved in a project opens
   (or is pasted) as Tint in colorize mode with a sepia color, at the same amount.
@@ -950,7 +952,7 @@ look there, so `make run` finds the `plugins` folder of the repository.
   provides in its **Provides** column, and when a later version
   works here (none past the plugin's `latest` in the list), an icon next to the version
   (an up arrow in a disc; the new version and what changed in it in its tooltip): a click
-  downloads that version in place of the installed one (used from the next start). When
+  downloads that version in place of the installed one, used at once. When
   that version's `compatible_from` is later than the installed one (it can't read the
   settings the installed version saved), the icon is in the warning color and its tooltip
   says so.
@@ -963,8 +965,13 @@ look there, so `make run` finds the `plugins` folder of the repository.
   once saved. Updating downloads and checks the new file like Install, in the
   folder of the old one, which is replaced (set aside as `.<name>.old` beside it, never
   loaded: a library in use can't be deleted on Windows); the new file is allowed, keeps
-  the old one's enabled or disabled state, and is used from the next start (the row shows a
-  check mark, "Updated to x.y.z" in its tooltip, and the window offers the restart).
+  the old one's enabled or disabled state, and is loaded at once in place of the old one.
+  It is used from the next start only when it can't be (a disabled plugin, or more than 16
+  plugins installed or updated since startup): the row then shows a check mark, "Updated
+  to x.y.z" in its tooltip, and the window offers the restart. A library loaded again
+  since startup (installed again after it was uninstalled, or updated) is loaded from a
+  copy in the temporary folder, as the system would give the one already loaded from that
+  path.
 - **At startup**, the app also looks for a newer version of itself: the latest release's version,
   which the project's web page publishes with the download page. **Help > Update channel**
   chooses which: **Stable** (the default), the latest release that isn't a pre-release, in

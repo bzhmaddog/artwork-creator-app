@@ -515,6 +515,10 @@ pub struct EffectInstance {
     /// The name of a plugin's effect, to show it by when it is missing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// A fill-only effect (see `Effect::fill_only`) that takes the stroke too, as the
+    /// others do: the user's choice.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub with_stroke: bool,
 }
 
 /// A plugin of a repository: its id there and a version.
@@ -568,6 +572,7 @@ impl EffectInstance {
             links: Default::default(),
             plugin: None,
             name: None,
+            with_stroke: false,
         }
     }
 }
@@ -760,6 +765,18 @@ impl Registry {
             return false;
         };
         slot.set(self.load(path)).is_ok()
+    }
+
+    /// Loads the plugin installed at `path` in place of `old`, the version it updates,
+    /// which is unloaded: false if it can't be until the next start (`old` not loaded,
+    /// or no room left), `old` then left as it is.
+    pub fn replace(&self, old: &std::path::Path, path: &std::path::Path) -> bool {
+        let loaded = self.files().iter().any(|f| f.path == old);
+        if !loaded || self.installed.iter().all(|s| s.get().is_some()) {
+            return false;
+        }
+        self.remove(old);
+        self.add_installed(path)
     }
 
     /// Unloads the plugin file `path`, uninstalled: its effects, generators and file are
@@ -975,6 +992,7 @@ pub fn key(stack: &[EffectInstance]) -> u64 {
     registry().generation().hash(&mut h);
     for e in stack.iter().filter(|e| e.enabled) {
         e.effect.hash(&mut h);
+        e.with_stroke.hash(&mut h);
         serde_json::to_string(&e.params)
             .unwrap_or_default()
             .hash(&mut h);
@@ -989,18 +1007,22 @@ const MAX_PADDING: f32 = 4096.0;
 /// `scale`, in its pixels: what all enabled effects ask for, added up.
 pub fn padding(stack: &[EffectInstance], scale: f32) -> [u32; 4] {
     let mut pad = [0; 4];
-    for (effect, params) in steps(stack) {
+    for (effect, params, _) in steps(stack) {
         pad = add_padding(pad, effect_padding(effect, &params, scale));
     }
     pad
 }
 
+/// One enabled effect of a stack, its parameters, and whether it leaves the stroke out.
+type Step<'a> = (&'static dyn Effect, Params<'a>, bool);
+
 /// The enabled effects of the stack that are available, in order, with their parameters.
-fn steps(stack: &[EffectInstance]) -> impl Iterator<Item = (&'static dyn Effect, Params<'_>)> {
+fn steps(stack: &[EffectInstance]) -> impl Iterator<Item = Step<'_>> {
     let reg = registry();
     stack.iter().filter(|e| e.enabled).filter_map(move |inst| {
         let effect = reg.get(&inst.effect)?;
-        Some((effect, Params::new(effect.params(), &inst.params)))
+        let leaves = effect.fill_only() && !inst.with_stroke;
+        Some((effect, Params::new(effect.params(), &inst.params), leaves))
     })
 }
 
@@ -1062,7 +1084,7 @@ pub struct Stroke {
 /// True if the stack has an enabled effect that leaves a stroke out, so a drawn layer
 /// draws its stroke on its own (see `Stroke`).
 pub fn leaves_strokes(stack: &[EffectInstance]) -> bool {
-    steps(stack).any(|(effect, _)| effect.fill_only())
+    steps(stack).any(|(_, _, leaves)| leaves)
 }
 
 /// [`apply`] to the image of a drawn layer without its stroke: the stroke joins it
@@ -1118,14 +1140,12 @@ fn over(top: [u8; 4], bottom: [u8; 4]) -> [u8; 4] {
 fn run<'a>(
     img: &mut RgbaImage,
     mut stroke: Option<Stroke>,
-    steps: impl Iterator<Item = (&'static dyn Effect, Params<'a>)>,
+    steps: impl Iterator<Item = Step<'a>>,
     scale: f32,
 ) -> Applied {
     let mut done = Applied::default();
-    for (effect, params) in steps {
-        if !effect.fill_only()
-            && let Some(s) = stroke.take()
-        {
+    for (effect, params, leaves) in steps {
+        if !leaves && let Some(s) = stroke.take() {
             add_stroke(img, s, done.pad);
         }
         let total = add_padding(done.pad, effect_padding(effect, &params, scale));
@@ -1230,6 +1250,13 @@ mod tests {
         let stack = [blur, effect("builtin.invert")];
         apply_with_stroke(&mut img, stroke(false), &stack, 1.0);
         assert_eq!(px(&img)[1], [255, 255, 0, 255]);
+        // Told to take it, the invert changes it as well.
+        let mut with = effect("builtin.invert");
+        with.with_stroke = true;
+        let mut img = rest.clone();
+        apply_with_stroke(&mut img, stroke(false), std::slice::from_ref(&with), 1.0);
+        assert_eq!(px(&img)[1], [255, 255, 0, 255]);
+        assert!(!leaves_strokes(&[with]));
         assert!(leaves_strokes(&stack));
         assert!(!leaves_strokes(&stack[..1]));
     }
@@ -1300,6 +1327,7 @@ mod tests {
             links: Default::default(),
             plugin: Some(entry(v)),
             name: None,
+            with_stroke: false,
         };
         let mut old = inst("o/dots", "0.1.0");
         assert!(reg.update_version(&mut old));
@@ -1459,6 +1487,7 @@ mod tests {
                 links: Default::default(),
                 plugin: None,
                 name: None,
+                with_stroke: false,
             },
             invert,
         ];
@@ -1505,14 +1534,14 @@ mod tests {
         }));
         // The margins the later effect needs are not there yet for the first one.
         let mut img = RgbaImage::new(2, 2);
-        let fill_then_pad = [fill, margin].map(|e| (e, Params::new(&[], &values)));
+        let fill_then_pad = [fill, margin].map(|e| (e, Params::new(&[], &values), false));
         let done = run(&mut img, None, fill_then_pad.into_iter(), 1.0);
         assert_eq!((done.pad, img.dimensions()), ([2; 4], (6, 6)));
         // Each one painted the whole image it got: the last one over all of it.
         assert_eq!(img.get_pixel(0, 0).0, [0, 0, 255, 255]);
         // The margins come before the effect that asked for them.
         let mut img = RgbaImage::new(2, 2);
-        let pad_then_fill = [margin, fill].map(|e| (e, Params::new(&[], &values)));
+        let pad_then_fill = [margin, fill].map(|e| (e, Params::new(&[], &values), false));
         run(&mut img, None, pad_then_fill.into_iter(), 1.0);
         assert_eq!(img.get_pixel(0, 0).0, [255, 0, 0, 255]);
     }

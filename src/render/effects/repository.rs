@@ -671,11 +671,19 @@ pub fn save(data: &[u8], d: &Download, dir: &Path) -> Result<PathBuf, String> {
 
 /// Moves the plugin file `path` out of the way, to `.<name>.old` beside it (never
 /// loaded): a library loaded by the app can't be replaced or deleted on Windows, but can
-/// be renamed. The copy set aside before it is deleted.
+/// be renamed. The copy set aside before it is deleted, or kept if it is still loaded
+/// (`.<name>.<n>.old` then).
 pub fn set_aside(path: &Path) -> std::io::Result<()> {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
-    let old = path.with_file_name(format!(".{name}.old"));
-    let _ = std::fs::remove_file(&old);
+    let aside = |n: usize| match n {
+        0 => path.with_file_name(format!(".{name}.old")),
+        n => path.with_file_name(format!(".{name}.{n}.old")),
+    };
+    let _ = std::fs::remove_file(aside(0));
+    let old = (0..)
+        .map(aside)
+        .find(|p| !p.exists())
+        .unwrap_or_else(|| aside(0));
     std::fs::rename(path, old)
 }
 
@@ -1103,6 +1111,12 @@ mod tests {
         let path = save(data, &d, &dir).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), data);
         assert_eq!(std::fs::read(dir.join(".p.py.old")).unwrap(), b"old");
+        // The copy set aside before can't be deleted (still loaded, on Windows): kept,
+        // this one set aside beside it.
+        std::fs::remove_file(dir.join(".p.py.old")).unwrap();
+        std::fs::create_dir(dir.join(".p.py.old")).unwrap();
+        set_aside(&path).unwrap();
+        assert_eq!(std::fs::read(dir.join(".p.py.1.old")).unwrap(), data);
         let _ = std::fs::remove_dir_all(dir);
     }
 
