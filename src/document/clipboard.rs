@@ -217,6 +217,7 @@ mod tests {
                 links: Default::default(),
                 plugin: None,
                 name: None,
+                with_stroke: false,
             }),
             ..Default::default()
         };

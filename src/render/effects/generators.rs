@@ -123,6 +123,7 @@ pub mod testing {
             links: Default::default(),
             plugin: None,
             name: None,
+            with_stroke: false,
         };
         let before = inst.params.clone();
         migrate(&mut inst);

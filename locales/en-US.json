@@ -209,6 +209,8 @@
   "EFFECT_THRESHOLD_HINT": "Pure black and white",
   "EFFECT_TINT": "Tint",
   "EFFECT_TINT_HINT": "Color the image with one color",
+  "EFFECT_WITH_STROKE": "Include the stroke",
+  "EFFECT_WITH_STROKE_HINT": "Apply it to the shape's stroke or the text's outline too; otherwise they stay as they are",
   "ELEMENTS_SECTION": "Elements",
   "ELEMENT_COLOR": "Color",
   "ELEMENT_KIND": "Kind",

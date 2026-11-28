@@ -1704,6 +1704,7 @@ mod tests {
                 version: "1.0.0".into(),
             }),
             name: Some("Not installed".into()),
+            with_stroke: false,
         });
         let json = serde_json::to_string(&l).unwrap();
         let back: Layer = serde_json::from_str(&json).unwrap();

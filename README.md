@@ -214,7 +214,8 @@ See the Python plugins of
 An effect that changes colors, not shapes (a tint, a halftone), says so with `fill_only`
 (`fn fill_only` returning true in Rust, `fill_only = True` in Python, the
 `ARTWORK_EFFECT_FILL_ONLY` flag in C): the app then leaves a shape's stroke and a text's
-outline out of it and draws them back unchanged after it. This needs plugin SDK 0.7.0:
+outline out of it and draws them back unchanged after it, unless the user ticks the
+effect's **Include the stroke**. This needs plugin SDK 0.7.0:
 plugin interface version 4 for a library, which older apps don't load; older apps ignore it
 in a Python plugin.
 

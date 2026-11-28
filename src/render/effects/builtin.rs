@@ -1351,6 +1351,7 @@ mod tests {
             links: Default::default(),
             plugin: None,
             name: None,
+            with_stroke: false,
         };
         migrate(&mut inst);
         assert_eq!(inst.effect, "builtin.tint");

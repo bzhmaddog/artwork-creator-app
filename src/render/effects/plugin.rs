@@ -854,11 +854,31 @@ pub(super) fn is_python(path: &Path) -> bool {
         .is_some_and(|e| e.eq_ignore_ascii_case("py"))
 }
 
-/// Loads one plugin library.
+/// The library files loaded since startup (see `load_library`).
+static LOADED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+/// Loads one plugin library. One loaded before from `path` (installed again or updated
+/// since startup) is loaded from a copy: the system would give the one already loaded
+/// from that path, whose code stays in memory (see `Registry::remove`).
 pub fn load_library(path: &Path) -> Result<Contents, String> {
+    let again = {
+        let mut loaded = LOADED.lock().unwrap_or_else(|e| e.into_inner());
+        let again = loaded.iter().any(|p| p == path);
+        if !again {
+            loaded.push(path.to_owned());
+        }
+        again
+    };
+    let copy = if again { Some(fresh_copy(path)?) } else { None };
     // SAFETY: none can be given: loading runs the library's initializers, and its code
     // is trusted from here on. docs/specs.md warns to install only trusted plugins.
-    let library = unsafe { Library::new(path) }.map_err(|e| e.to_string())?;
+    let library = unsafe { Library::new(copy.as_deref().unwrap_or(path)) };
+    if let Some(copy) = &copy {
+        // Once loaded it isn't needed, but a library in use can't be deleted on
+        // Windows: then the next run does.
+        let _ = std::fs::remove_file(copy);
+    }
+    let library = library.map_err(|e| e.to_string())?;
     let entry = {
         // SAFETY: the symbol has the ABI's entry type.
         let entry: libloading::Symbol<abi::EntryFn> =
@@ -873,6 +893,35 @@ pub fn load_library(path: &Path) -> Result<Contents, String> {
     let library = Arc::new(library);
     // SAFETY: the entry function returns null or a table valid while `library` is loaded.
     unsafe { from_table(entry(), path, Some(library)) }
+}
+
+/// Where the copies of libraries loaded again go: in the app's data folder, the user's
+/// own, not in the temporary folder, which other users can write to.
+fn copies_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    return Some(std::env::temp_dir().join(format!("artwork-copies-{}", std::process::id())));
+    #[cfg(not(test))]
+    crate::data_dir().map(|d| d.join("plugin-copies"))
+}
+
+/// A copy of the library `path` under a name of its own, in [`copies_dir`]. The copies
+/// other runs left there are deleted.
+fn fresh_copy(path: &Path) -> Result<PathBuf, String> {
+    static COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let dir = copies_dir().ok_or("no data folder to copy the library to")?;
+    let pid = std::process::id();
+    let ours = format!("{pid}-");
+    for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+        if !e.file_name().to_string_lossy().starts_with(&ours) {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let n = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let copy = dir.join(format!("{ours}{n}-{name}"));
+    std::fs::copy(path, &copy).map_err(|e| e.to_string())?;
+    Ok(copy)
 }
 
 /// What a plugin library holds.
@@ -1604,6 +1653,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[test]
+    fn a_library_loaded_again_is_loaded_from_a_copy() {
+        let dir = std::env::temp_dir().join(format!("artwork-again-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let name = format!("junk-again.{}", std::env::consts::DLL_EXTENSION);
+        let path = dir.join(&name);
+        std::fs::write(&path, "not a library").unwrap();
+        let copies = copies_dir().unwrap();
+        let left = || {
+            let mut files = std::fs::read_dir(&copies).into_iter().flatten().flatten();
+            files.any(|f| f.file_name().to_string_lossy().ends_with(&name))
+        };
+        // Neither loads; the second time from a copy, deleted once tried.
+        assert!(load_library(&path).is_err());
+        assert!(load_library(&path).is_err());
+        assert!(!left());
+        // Each copy has a name of its own; those of other runs are deleted.
+        std::fs::create_dir_all(&copies).unwrap();
+        let other = copies.join(format!("other-0-{name}"));
+        std::fs::write(&other, "old").unwrap();
+        let copy = fresh_copy(&path).unwrap();
+        assert!(!other.exists());
+        assert_eq!(std::fs::read(&copy).unwrap(), b"not a library");
+        let second = fresh_copy(&path).unwrap();
+        assert_ne!(second, copy);
+        let _ = std::fs::remove_dir_all(copies);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// Loads a real library, e.g. one from the plugin repository:
     /// `ARTWORK_TEST_PLUGIN=plugins/libhalftone.so cargo test loads_plugin_library`.
     #[test]
@@ -1613,6 +1691,9 @@ mod tests {
         };
         let (info, effects, generators) = load_library(Path::new(&path)).unwrap();
         assert!(!effects.is_empty(), "{info:?}");
+        // Loaded again (installed again since startup): from a copy.
+        let (again, _, _) = load_library(Path::new(&path)).unwrap();
+        assert_eq!(again.name, info.name);
         for g in &generators {
             let inst = EffectInstance::generator(g);
             let mut img = RgbaImage::new(64, 48);

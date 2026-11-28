@@ -209,6 +209,8 @@
   "EFFECT_THRESHOLD_HINT": "Noir et blanc pur",
   "EFFECT_TINT": "Teinte unie",
   "EFFECT_TINT_HINT": "Colorer l'image d'une seule couleur",
+  "EFFECT_WITH_STROKE": "Inclure le contour",
+  "EFFECT_WITH_STROKE_HINT": "Appliquer aussi au contour de la forme ou du texte ; sinon il reste tel quel",
   "ELEMENTS_SECTION": "Éléments",
   "ELEMENT_COLOR": "Couleur",
   "ELEMENT_KIND": "Type",

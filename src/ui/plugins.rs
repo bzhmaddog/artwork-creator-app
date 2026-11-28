@@ -1,6 +1,7 @@
 //! The plugin manager (Tools > Plugins > Manage plugins...), also opened at the start
 //! when plugins wait to be allowed. Its Installed tab lists every plugin file found, to
-//! allow (loaded at once), enable or disable (at the next start), update or uninstall. Allowing a Python plugin first installs the packages it needs,
+//! allow (loaded at once), enable or disable (at the next start), update (loaded at once)
+//! or uninstall. Allowing a Python plugin first installs the packages it needs,
 //! with the app's own pip. Its Available tab lists the plugins of the repositories (the
 //! official one until removed, and those the user added), to install: downloaded into the user's plugins
 //! folder, allowed and enabled, and loaded at once.
@@ -421,16 +422,23 @@ impl Manager {
     }
 
     /// The plugin file `old` replaced with `path`, of `version`: allowed, as the user
-    /// chose to update it. The old one stays loaded until the next start.
+    /// chose to update it, and loaded at once in place of the old one if it can be;
+    /// otherwise the old one stays loaded until the next start.
     fn updated_file(&mut self, old: &Path, path: &Path, version: String) {
         match plugin::pending(path) {
             Ok(p) => self.settings.allow(&p),
             Err(e) => log::warn!("{}: {e}", path.display()),
         }
-        if self.settings.is_disabled(old) {
+        let disabled = self.settings.is_disabled(old);
+        if disabled {
             self.settings.set_disabled(path, true);
         }
         self.settings.save();
+        if !disabled && registry().replace(old, path) {
+            self.refresh_files();
+            self.refresh_known();
+            return;
+        }
         self.changed = true;
         self.updated.push((old.to_owned(), version));
         if let Ok(p) = plugin::pending(path)
